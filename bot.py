@@ -17,10 +17,10 @@ logging.basicConfig(
 # --- Configuration ---
 TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
 
-# Aapke Admin IDs (Filhal aapki ID set hai, baad mein aur add kar sakte hain)
+# Aapke Admin IDs
 ADMIN_USER_IDS = [6829195326]
 
-# Correct MongoDB Atlas URI (Password aur Database name ke sath)
+# MongoDB Atlas URI (Password aur Database name ke sath)
 MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
 
 client = MongoClient(MONGO_URI)
@@ -95,7 +95,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             await message.reply_text(f"Reply Broadcasted!\n✅ Success: {success_count}\n❌ Failed: {fail_count}")
             return
         else:
-            await message.reply_text("⚠️ Yeh message kisi broadcast post का reply nahi lag raha hai, isliye normal broadcast ki tarah bhej raha hoon.")
+            await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi lag raha hai, isliye normal broadcast ki tarah bhej raha hoon.")
 
     # --- Case B: Naya Fresh Broadcast Message ---
     channel_mapping_data = {}
@@ -128,8 +128,8 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
 def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Handler 1: Track channels where bot becomes admin
-    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_type=ChatMemberHandler.MY_CHAT_MEMBER))
+    # Handler 1: Track channels where bot becomes admin (Updated syntax for latest python-telegram-bot)
+    application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
     # Handler 2: Handle incoming posts and replies from admin in private chat
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
