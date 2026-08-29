@@ -17,7 +17,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- Flask Server (Render Port Timeout Fix karne ke liye) ---
+# --- Flask Server (Render Port Timeout Fix) ---
 app = Flask('')
 
 @app.route('/')
@@ -70,7 +70,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info(f"Removed channel: {chat.title} ({chat.id})")
 
 
-# --- 2. Broadcast & Reply-Threading Logic ---
+# --- 2. Broadcast, Reply & Delete Logic ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -81,13 +81,39 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     all_channels = list(channels_collection.find({}))
 
     if not all_channels:
-        await message.reply_text("Pehle kisi channel mein bot ko admin banayein, abhi koi channel connected nahi hai!")
+        await message.reply_text("⚠️ Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
         return
+
+    # --- Feature: Agar aapne kisi message par reply karke `/del` likha hai ---
+    if message.text and message.text.lower() == "/del" and message.reply_to_message:
+        replied_msg_id = message.reply_to_message.message_id
+        mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
+
+        if mapping:
+            channel_msg_map = mapping["channels"]
+            deleted_count = 0
+
+            for ch_str_id, ch_msg_id in channel_msg_map.items():
+                chat_id = int(ch_str_id)
+                try:
+                    # Har channel se message delete kar do
+                    await context.bot.delete_message(chat_id=chat_id, message_id=ch_msg_id)
+                    deleted_count += 1
+                except Exception as e:
+                    logging.error(f"Failed to delete in channel {chat_id}: {e}")
+
+            # Database se bhi mapping uda do
+            mappings_collection.delete_one({"admin_msg_id": replied_msg_id})
+            await message.reply_text(f"🗑️ Deleted from {deleted_count} channels successfully!")
+            return
+        else:
+            await message.reply_text("⚠️ Yeh message kisi broadcast post ka record nahi mila.")
+            return
 
     success_count = 0
     fail_count = 0
 
-    # Reply Threading Logic
+    # --- Case A: Reply Threading (Normal reply update) ---
     if message.reply_to_message:
         replied_msg_id = message.reply_to_message.message_id
         mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
@@ -103,12 +129,14 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                     logging.error(f"Failed to reply in channel {chat_id}: {e}")
                     fail_count += 1
 
-            await message.reply_text(f"Reply Broadcasted!\n✅ Success: {success_count}\n❌ Failed: {fail_count}")
+            # Agar koi fail hua ho tabhi warning do, warna chup raho
+            if fail_count > 0:
+                await message.reply_text(f"⚠️ Reply sent with errors!\n❌ Failed in {fail_count} channels.")
             return
         else:
-            await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi lag raha hai, isliye normal broadcast bhej raha hoon.")
+            await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # Fresh Broadcast Message
+    # --- Case B: Fresh Broadcast Message ---
     channel_mapping_data = {}
 
     for ch in all_channels:
@@ -123,30 +151,30 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
                 channels_collection.delete_one({"chat_id": chat_id})
 
+    # Agar mapping bani hai toh save karo
     if channel_mapping_data:
         mappings_collection.insert_one({
             "admin_msg_id": message.message_id,
             "channels": channel_mapping_data
         })
 
-    await message.reply_text(
-        f"Broadcast Complete!\n✅ Success: {success_count}\n❌ Failed: {fail_count}"
-    )
+    # ✨ Sabse bada badlav: Agar sab kuch successful raha, toh bot ekdum silent rahega (koi "Broadcast Complete" msg nahi aayega)
+    # Sirf tabhi message aayega jab koi error/fail hoga
+    if fail_count > 0:
+        await message.reply_text(f"⚠️ Broadcast completed, but failed in {fail_count} channels.")
 
 
 def main():
-    # Pehle Flask server ko background mein start karo taaki Render port open mil jaye
     keep_alive()
 
     application = ApplicationBuilder().token(TOKEN).build()
 
-    # Handlers add karein
     application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Advanced Reply-Threading Broadcast Bot is running...")
+    print("Advanced Reply-Threading & Deletion Bot is running...")
     
     application.run_polling(drop_pending_updates=True)
 
