@@ -1,4 +1,7 @@
 import logging
+import os
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -14,13 +17,26 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
+# --- Flask Server (Render Port Timeout Fix karne ke liye) ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive and running 24x7!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+
 # --- Configuration ---
 TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
-
-# Aapke Admin IDs
 ADMIN_USER_IDS = [6829195326]
 
-# MongoDB Atlas URI
 MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
 
 client = MongoClient(MONGO_URI)
@@ -119,6 +135,9 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
 
 
 def main():
+    # Pehle Flask server ko background mein start karo taaki Render port open mil jaye
+    keep_alive()
+
     application = ApplicationBuilder().token(TOKEN).build()
 
     # Handlers add karein
@@ -129,7 +148,6 @@ def main():
 
     print("Advanced Reply-Threading Broadcast Bot is running...")
     
-    # drop_pending_updates=True se purane pending messages aur conflicts clear ho jayenge
     application.run_polling(drop_pending_updates=True)
 
 
