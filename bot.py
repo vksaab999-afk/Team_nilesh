@@ -35,7 +35,7 @@ def keep_alive():
 
 # --- Configuration ---
 TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
-ADMIN_USER_IDS = [6829195326]
+ADMIN_USER_IDS = [6829195326,5785924075]
 
 MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
 
