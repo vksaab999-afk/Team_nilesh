@@ -36,8 +36,6 @@ def keep_alive():
 
 # --- Configuration ---
 TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
-
-# Aapki dono Admin IDs yahan configured hain
 ADMIN_USER_IDS = [6829195326, 5785924075]
 
 MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
@@ -106,7 +104,51 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Broadcast & Reply-Threading Logic (Forward method for 100% Premium Icons preservation) ---
+# --- Helper Function: Send / Reply preserving Premium Custom Emojis & No Forward Tag ---
+async def send_or_reply_content(bot, chat_id, message, reply_to_channel_msg_id=None):
+    # Agar message mein sirf text (aur custom emojis/entities) hain
+    if message.text:
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=message.text,
+            entities=message.entities,  # Yeh line saare custom premium animated emojis ko retain rakhti hai!
+            reply_to_message_id=reply_to_channel_msg_id,
+            disable_web_page_preview=message.disable_web_page_preview if hasattr(message, 'disable_web_page_preview') else False
+        )
+    
+    # Agar message mein photo hai
+    elif message.photo:
+        photo_file = message.photo[-1].file_id
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=photo_file,
+            caption=message.caption,
+            caption_entities=message.caption_entities,  # Photo ke caption ke premium emojis ke liye
+            reply_to_message_id=reply_to_channel_msg_id
+        )
+
+    # Agar message mein video hai
+    elif message.video:
+        video_file = message.video.file_id
+        return await bot.send_video(
+            chat_id=chat_id,
+            video=video_file,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id
+        )
+
+    # Agar koi aur media type ho (jaise voice note / audio / document) toh safe fallback copy_message use karega
+    else:
+        return await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+            reply_to_message_id=reply_to_channel_msg_id
+        )
+
+
+# --- 3. Broadcast & Reply-Threading Logic ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -133,11 +175,11 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             for ch_str_id, ch_msg_id in channel_msg_map.items():
                 chat_id = int(ch_str_id)
                 try:
-                    # forward_message use karne se reply mein bhi premium icons/formatting safe rahengi
-                    await context.bot.forward_message(
+                    await send_or_reply_content(
+                        bot=context.bot,
                         chat_id=chat_id,
-                        from_chat_id=message.chat_id,
-                        message_id=message.message_id
+                        message=message,
+                        reply_to_channel_msg_id=int(ch_msg_id)
                     )
                     success_count += 1
                 except Exception as e:
@@ -150,17 +192,16 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Broadcast Message (Forward method preserves Custom Premium Emojis) ---
+    # --- Case B: Fresh Broadcast Message ---
     channel_mapping_data = {}
 
     for ch in all_channels:
         chat_id = ch["chat_id"]
         try:
-            # forward_message se Telegram ke saare custom animated emojis/icons original state mein jayenge
-            sent_msg = await context.bot.forward_message(
+            sent_msg = await send_or_reply_content(
+                bot=context.bot,
                 chat_id=chat_id,
-                from_chat_id=message.chat_id,
-                message_id=message.message_id
+                message=message
             )
             channel_mapping_data[str(chat_id)] = sent_msg.message_id
             success_count += 1
