@@ -7,6 +7,7 @@ from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     MessageHandler,
+    CommandHandler,
     ChatMemberHandler,
     filters,
 )
@@ -70,7 +71,40 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info(f"Removed channel: {chat.title} ({chat.id})")
 
 
-# --- 2. Broadcast, Reply & Delete Logic ---
+# --- 2. Delete Logic (/del command) ---
+async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+
+    message = update.message
+
+    if not message.reply_to_message:
+        await message.reply_text("⚠️ Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
+        return
+
+    replied_msg_id = message.reply_to_message.message_id
+    mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
+
+    if mapping:
+        channel_msg_map = mapping["channels"]
+        deleted_count = 0
+
+        for ch_str_id, ch_msg_id in channel_msg_map.items():
+            chat_id = int(ch_str_id)
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=ch_msg_id)
+                deleted_count += 1
+            except Exception as e:
+                logging.error(f"Failed to delete in channel {chat_id}: {e}")
+
+        mappings_collection.delete_one({"admin_msg_id": replied_msg_id})
+        await message.reply_text(f"🗑️ Sabhi channels se message delete kar diya gaya hai! ({deleted_count} channels)")
+    else:
+        await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
+
+
+# --- 3. Broadcast & Reply-Threading Logic (Premium Icons Fixed) ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -84,36 +118,10 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         await message.reply_text("⚠️ Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
         return
 
-    # --- Feature: Agar aapne kisi message par reply karke `/del` likha hai ---
-    if message.text and message.text.lower() == "/del" and message.reply_to_message:
-        replied_msg_id = message.reply_to_message.message_id
-        mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
-
-        if mapping:
-            channel_msg_map = mapping["channels"]
-            deleted_count = 0
-
-            for ch_str_id, ch_msg_id in channel_msg_map.items():
-                chat_id = int(ch_str_id)
-                try:
-                    # Har channel se message delete kar do
-                    await context.bot.delete_message(chat_id=chat_id, message_id=ch_msg_id)
-                    deleted_count += 1
-                except Exception as e:
-                    logging.error(f"Failed to delete in channel {chat_id}: {e}")
-
-            # Database se bhi mapping uda do
-            mappings_collection.delete_one({"admin_msg_id": replied_msg_id})
-            await message.reply_text(f"🗑️ Deleted from {deleted_count} channels successfully!")
-            return
-        else:
-            await message.reply_text("⚠️ Yeh message kisi broadcast post ka record nahi mila.")
-            return
-
     success_count = 0
     fail_count = 0
 
-    # --- Case A: Reply Threading (Normal reply update) ---
+    # --- Case A: Reply Threading (Purane message ka reply - Premium Emojis preserved) ---
     if message.reply_to_message:
         replied_msg_id = message.reply_to_message.message_id
         mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
@@ -123,26 +131,36 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             for ch_str_id, ch_msg_id in channel_msg_map.items():
                 chat_id = int(ch_str_id)
                 try:
-                    await message.copy(chat_id=chat_id, reply_to_message_id=ch_msg_id)
+                    # context.bot.copy_message premium entities aur formatting ko maintain rakhta hai
+                    await context.bot.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=message.chat_id,
+                        message_id=message.message_id,
+                        reply_to_message_id=int(ch_msg_id)
+                    )
                     success_count += 1
                 except Exception as e:
                     logging.error(f"Failed to reply in channel {chat_id}: {e}")
                     fail_count += 1
 
-            # Agar koi fail hua ho tabhi warning do, warna chup raho
             if fail_count > 0:
                 await message.reply_text(f"⚠️ Reply sent with errors!\n❌ Failed in {fail_count} channels.")
             return
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Broadcast Message ---
+    # --- Case B: Fresh Broadcast Message (Premium Icons / Emojis / Entities preserved) ---
     channel_mapping_data = {}
 
     for ch in all_channels:
         chat_id = ch["chat_id"]
         try:
-            sent_msg = await message.copy(chat_id=chat_id)
+            # context.bot.copy_message ka use karne se Telegram premium animated emojis/icons drop nahi honge
+            sent_msg = await context.bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=message.chat_id,
+                message_id=message.message_id
+            )
             channel_mapping_data[str(chat_id)] = sent_msg.message_id
             success_count += 1
         except Exception as e:
@@ -151,15 +169,12 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
                 channels_collection.delete_one({"chat_id": chat_id})
 
-    # Agar mapping bani hai toh save karo
     if channel_mapping_data:
         mappings_collection.insert_one({
             "admin_msg_id": message.message_id,
             "channels": channel_mapping_data
         })
 
-    # ✨ Sabse bada badlav: Agar sab kuch successful raha, toh bot ekdum silent rahega (koi "Broadcast Complete" msg nahi aayega)
-    # Sirf tabhi message aayega jab koi error/fail hoga
     if fail_count > 0:
         await message.reply_text(f"⚠️ Broadcast completed, but failed in {fail_count} channels.")
 
@@ -170,6 +185,7 @@ def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    application.add_handler(CommandHandler("del", delete_broadcast))
     
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
