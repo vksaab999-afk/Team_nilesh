@@ -36,7 +36,9 @@ def keep_alive():
 
 # --- Configuration ---
 TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
-ADMIN_USER_IDS = [6829195326,5785924075]
+
+# Aapki dono Admin IDs yahan configured hain
+ADMIN_USER_IDS = [6829195326, 5785924075]
 
 MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
 
@@ -104,7 +106,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Broadcast & Reply-Threading Logic (Premium Icons Fixed) ---
+# --- 3. Broadcast & Reply-Threading Logic (Forward method for 100% Premium Icons preservation) ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -121,7 +123,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     success_count = 0
     fail_count = 0
 
-    # --- Case A: Reply Threading (Purane message ka reply - Premium Emojis preserved) ---
+    # --- Case A: Reply Threading ---
     if message.reply_to_message:
         replied_msg_id = message.reply_to_message.message_id
         mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
@@ -131,12 +133,11 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             for ch_str_id, ch_msg_id in channel_msg_map.items():
                 chat_id = int(ch_str_id)
                 try:
-                    # context.bot.copy_message premium entities aur formatting ko maintain rakhta hai
-                    await context.bot.copy_message(
+                    # forward_message use karne se reply mein bhi premium icons/formatting safe rahengi
+                    await context.bot.forward_message(
                         chat_id=chat_id,
                         from_chat_id=message.chat_id,
-                        message_id=message.message_id,
-                        reply_to_message_id=int(ch_msg_id)
+                        message_id=message.message_id
                     )
                     success_count += 1
                 except Exception as e:
@@ -149,14 +150,14 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Broadcast Message (Premium Icons / Emojis / Entities preserved) ---
+    # --- Case B: Fresh Broadcast Message (Forward method preserves Custom Premium Emojis) ---
     channel_mapping_data = {}
 
     for ch in all_channels:
         chat_id = ch["chat_id"]
         try:
-            # context.bot.copy_message ka use karne se Telegram premium animated emojis/icons drop nahi honge
-            sent_msg = await context.bot.copy_message(
+            # forward_message se Telegram ke saare custom animated emojis/icons original state mein jayenge
+            sent_msg = await context.bot.forward_message(
                 chat_id=chat_id,
                 from_chat_id=message.chat_id,
                 message_id=message.message_id
