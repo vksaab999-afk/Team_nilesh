@@ -1,81 +1,52 @@
-import os
 import logging
-import asyncio
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import os
 from threading import Thread
-from pymongo import MongoClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from flask import Flask
+import asyncio
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
-    CommandHandler,
-    ChatJoinRequestHandler,
-    MessageHandler,
     ContextTypes,
+    MessageHandler,
+    CommandHandler,
+    ChatMemberHandler,
     filters,
 )
+from pymongo import MongoClient
 
-# Logging Setup
-logging.basicConfig(level=logging.INFO)
+# Logging setup
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
-# ==================== CONFIGURATION ====================
-BOT_TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI" 
+# --- Flask Server (Render Port Timeout Fix) ---
+app = Flask('')
 
-# Multiple Admins Support
-ADMIN_IDS = [6829195326, 5785924075]
+@app.route('/')
+def home():
+    return "Bot is alive and running 24x7!"
 
-# MongoDB Atlas URI
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.start()
+
+
+# --- Configuration ---
+TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
+
+# Admin IDs
+ADMIN_USER_IDS = [6829195326, 5785924075]
+
 MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
 
-# Source Chat & Message IDs (Agar zaroorat ho)
-SOURCE_CHAT_ID = 5785924075
-# =======================================================
-
-# --- MONGODB SETUP ---
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client["telegram_broadcast_bot"]
+client = MongoClient(MONGO_URI)
+db = client["telegram_broadcast_bot"]
 channels_collection = db["active_channels"]
 mappings_collection = db["broadcast_mappings"]
-users_collection = db["users"]
-
-
-def save_user_to_mongo(user_id, first_name, username):
-    try:
-        users_collection.update_one(
-            {"user_id": user_id},
-            {
-                "$set": {
-                    "user_id": user_id,
-                    "first_name": first_name,
-                    "username": username
-                }
-            },
-            upsert=True
-        )
-    except Exception as e:
-        logging.error(f"MongoDB Error: {e}")
-
-
-# --- KEEP-ALIVE WEB SERVER (Fixed for UptimeRobot) ---
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        self.wfile.write(bytes("<html><body><h1>Bot is Live and MongoDB Connected!</h1></body></html>", "utf-8"))
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-    
-    def log_message(self, format, *args):
-        return
-
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    server.serve_forever()
 
 
 # --- 1. Dynamic Channel Tracking ---
@@ -106,7 +77,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- 2. Delete Logic (/del command) ---
 async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if user.id not in ADMIN_IDS:
+    if user.id not in ADMIN_USER_IDS:
         return
 
     message = update.message
@@ -136,18 +107,17 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Core Sender Function (Ensures Animated Icons & No Forward Tag) ---
-async def send_custom_content(bot, chat_id, message, reply_to_channel_msg_id=None):
+# --- 3. Core Sender Function (Premium Icons + No Forward Tag) ---
+async def send_clean_content(bot, chat_id, message, reply_to_channel_msg_id=None):
     """
-    Jaise aapke doosre working bot mein hota hai: yeh function text, photo, video, 
-    aur unke custom animated emoji entities (`entities` / `caption_entities`) ko 
-    bina kisi 'Forwarded from' tag ke direct clean bhejta hai.
+    Yeh function text, photos, videos aur unke custom animated emoji entities 
+    ko direct bhejta hai taaki animated icons 100% kaam karein aur forward tag na aaye.
     """
     if message.text:
         return await bot.send_message(
             chat_id=chat_id,
             text=message.text,
-            entities=message.entities,  # Custom animated emojis retain karne ke liye
+            entities=message.entities,  # Animated custom emojis ke liye
             reply_to_message_id=reply_to_channel_msg_id,
             disable_web_page_preview=message.disable_web_page_preview if hasattr(message, 'disable_web_page_preview') else False
         )
@@ -156,7 +126,7 @@ async def send_custom_content(bot, chat_id, message, reply_to_channel_msg_id=Non
             chat_id=chat_id,
             photo=message.photo[-1].file_id,
             caption=message.caption,
-            caption_entities=message.caption_entities,  # Photo caption ke animated emojis ke liye
+            caption_entities=message.caption_entities,  # Caption ke animated emojis ke liye
             reply_to_message_id=reply_to_channel_msg_id
         )
     elif message.video:
@@ -192,7 +162,6 @@ async def send_custom_content(bot, chat_id, message, reply_to_channel_msg_id=Non
             reply_to_message_id=reply_to_channel_msg_id
         )
     else:
-        # Fallback agar koi aur complex media ho
         return await bot.copy_message(
             chat_id=chat_id,
             from_chat_id=message.chat_id,
@@ -205,7 +174,7 @@ async def send_custom_content(bot, chat_id, message, reply_to_channel_msg_id=Non
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    if user.id not in ADMIN_IDS:
+    if user.id not in ADMIN_USER_IDS:
         return
 
     message = update.message
@@ -218,7 +187,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     success_count = 0
     fail_count = 0
 
-    # --- Case A: Reply Threading (Purane message ka reply) ---
+    # --- Case A: Reply Threading ---
     if message.reply_to_message:
         replied_msg_id = message.reply_to_message.message_id
         mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
@@ -228,19 +197,19 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             for ch_str_id, ch_msg_id in channel_msg_map.items():
                 chat_id = int(ch_str_id)
                 try:
-                    await send_custom_content(
+                    await send_clean_content(
                         bot=context.bot,
                         chat_id=chat_id,
                         message=message,
                         reply_to_channel_msg_id=int(ch_msg_id)
                     )
                     success_count += 1
+                    await asyncio.sleep(0.04)
                 except Exception as e:
                     logging.error(f"Failed to reply in channel {chat_id}: {e}")
                     fail_count += 1
 
-            if fail_count > 0:
-                await message.reply_text(f"⚠️ Reply sent with errors!\n❌ Failed in {fail_count} channels.")
+            await message.reply_text(f"✅ **Reply Sent in Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
@@ -251,13 +220,14 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     for ch in all_channels:
         chat_id = ch["chat_id"]
         try:
-            sent_msg = await send_custom_content(
+            sent_msg = await send_clean_content(
                 bot=context.bot,
                 chat_id=chat_id,
                 message=message
             )
             channel_mapping_data[str(chat_id)] = sent_msg.message_id
             success_count += 1
+            await asyncio.sleep(0.04)
         except Exception as e:
             logging.error(f"Failed to send to channel {chat_id}: {e}")
             fail_count += 1
@@ -270,32 +240,24 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             "channels": channel_mapping_data
         })
 
-    if fail_count > 0:
-        await message.reply_text(f"⚠️ Broadcast completed, but failed in {fail_count} channels.")
-
-
-# --- STATS COMMAND ---
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id in ADMIN_IDS:
-        total_users = users_collection.count_documents({})
-        total_channels = channels_collection.count_documents({})
-        await update.message.reply_text(f"📊 **Total Users:** `{total_users}`\n📢 **Total Connected Channels:** `{total_channels}`", parse_mode="Markdown")
+    await message.reply_text(
+        f"✅ **Broadcast Done!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
+        parse_mode="Markdown"
+    )
 
 
 def main():
-    Thread(target=run_web_server, daemon=True).start()
+    keep_alive()
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(TOKEN).build()
 
     application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("del", delete_broadcast))
-    application.add_handler(CommandHandler("stats", stats))
     
-    # Admin broadcast / reply handler
-    handler = MessageHandler(filters.User(ADMIN_IDS) & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
+    handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Channel Broadcast & Reply-Threading Bot with Working Entity Logic is running...")
+    print("Channel Broadcast & Reply-Threading Bot with Premium Icons is running...")
     
     application.run_polling(drop_pending_updates=True)
 
