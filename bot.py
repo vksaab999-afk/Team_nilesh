@@ -36,12 +36,12 @@ def keep_alive():
 
 
 # --- Configuration ---
-TOKEN = "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI"
+# Safety Tip: Set TOKEN and MONGO_URI in your environment variables for security
+TOKEN = os.environ.get("BOT_TOKEN", "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot")
 
 # Admin IDs
 ADMIN_USER_IDS = [6829195326, 5785924075]
-
-MONGO_URI = "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot"
 
 client = MongoClient(MONGO_URI)
 db = client["telegram_broadcast_bot"]
@@ -91,15 +91,20 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mapping:
         channel_msg_map = mapping["channels"]
-        deleted_count = 0
-
-        for ch_str_id, ch_msg_id in channel_msg_map.items():
+        
+        async def delete_single_msg(ch_str_id, ch_msg_id):
             chat_id = int(ch_str_id)
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=ch_msg_id)
-                deleted_count += 1
+                return True
             except Exception as e:
                 logging.error(f"Failed to delete in channel {chat_id}: {e}")
+                return False
+
+        # Parallel deletion for speed
+        tasks = [delete_single_msg(ch_id, msg_id) for ch_id, msg_id in channel_msg_map.items()]
+        results = await asyncio.gather(*tasks)
+        deleted_count = sum(1 for r in results if r)
 
         mappings_collection.delete_one({"admin_msg_id": replied_msg_id})
         await message.reply_text(f"🗑️ Sabhi channels se message delete kar diya gaya hai! ({deleted_count} channels)")
@@ -107,70 +112,21 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Core Sender Function (Premium Icons + No Forward Tag) ---
+# --- 3. Core Sender Function (Copy Message Preserves Premium Emojis & Formatting 100%) ---
 async def send_clean_content(bot, chat_id, message, reply_to_channel_msg_id=None):
     """
-    Yeh function text, photos, videos aur unke custom animated emoji entities 
-    ko direct bhejta hai taaki animated icons 100% kaam karein aur forward tag na aaye.
+    copy_message ka use karke Telegram server side exact message copy karta hai.
+    Isse Premium Emojis/Icons retain hote hain aur "Forwarded From" tag bhi nahi aata.
     """
-    if message.text:
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=message.text,
-            entities=message.entities,  # Animated custom emojis ke liye
-            reply_to_message_id=reply_to_channel_msg_id,
-            disable_web_page_preview=message.disable_web_page_preview if hasattr(message, 'disable_web_page_preview') else False
-        )
-    elif message.photo:
-        return await bot.send_photo(
-            chat_id=chat_id,
-            photo=message.photo[-1].file_id,
-            caption=message.caption,
-            caption_entities=message.caption_entities,  # Caption ke animated emojis ke liye
-            reply_to_message_id=reply_to_channel_msg_id
-        )
-    elif message.video:
-        return await bot.send_video(
-            chat_id=chat_id,
-            video=message.video.file_id,
-            caption=message.caption,
-            caption_entities=message.caption_entities,
-            reply_to_message_id=reply_to_channel_msg_id
-        )
-    elif message.audio:
-        return await bot.send_audio(
-            chat_id=chat_id,
-            audio=message.audio.file_id,
-            caption=message.caption,
-            caption_entities=message.caption_entities,
-            reply_to_message_id=reply_to_channel_msg_id
-        )
-    elif message.voice:
-        return await bot.send_voice(
-            chat_id=chat_id,
-            voice=message.voice.file_id,
-            caption=message.caption,
-            caption_entities=message.caption_entities,
-            reply_to_message_id=reply_to_channel_msg_id
-        )
-    elif message.document:
-        return await bot.send_document(
-            chat_id=chat_id,
-            document=message.document.file_id,
-            caption=message.caption,
-            caption_entities=message.caption_entities,
-            reply_to_message_id=reply_to_channel_msg_id
-        )
-    else:
-        return await bot.copy_message(
-            chat_id=chat_id,
-            from_chat_id=message.chat_id,
-            message_id=message.message_id,
-            reply_to_message_id=reply_to_channel_msg_id
-        )
+    return await bot.copy_message(
+        chat_id=chat_id,
+        from_chat_id=message.chat_id,
+        message_id=message.message_id,
+        reply_to_message_id=reply_to_channel_msg_id
+    )
 
 
-# --- 4. Broadcast & Reply-Threading Logic ---
+# --- 4. High-Speed Parallel Broadcast Logic ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -184,9 +140,6 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         await message.reply_text("⚠️ Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
         return
 
-    success_count = 0
-    fail_count = 0
-
     # --- Case A: Reply Threading ---
     if message.reply_to_message:
         replied_msg_id = message.reply_to_message.message_id
@@ -194,7 +147,8 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
 
         if mapping:
             channel_msg_map = mapping["channels"]
-            for ch_str_id, ch_msg_id in channel_msg_map.items():
+
+            async def send_reply_task(ch_str_id, ch_msg_id):
                 chat_id = int(ch_str_id)
                 try:
                     await send_clean_content(
@@ -203,21 +157,27 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                         message=message,
                         reply_to_channel_msg_id=int(ch_msg_id)
                     )
-                    success_count += 1
-                    await asyncio.sleep(0.04)
+                    return True
                 except Exception as e:
                     logging.error(f"Failed to reply in channel {chat_id}: {e}")
-                    fail_count += 1
+                    return False
 
-            await message.reply_text(f"✅ **Reply Sent in Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
+            tasks = [send_reply_task(ch_str_id, ch_msg_id) for ch_str_id, ch_msg_id in channel_msg_map.items()]
+            results = await asyncio.gather(*tasks)
+
+            success_count = sum(1 for r in results if r)
+            fail_count = len(results) - success_count
+
+            await message.reply_text(
+                f"✅ **Reply Sent in Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", 
+                parse_mode="Markdown"
+            )
             return
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Broadcast Message ---
-    channel_mapping_data = {}
-
-    for ch in all_channels:
+    # --- Case B: Fresh Broadcast Message (Parallel Execution) ---
+    async def send_broadcast_task(ch):
         chat_id = ch["chat_id"]
         try:
             sent_msg = await send_clean_content(
@@ -225,14 +185,27 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 chat_id=chat_id,
                 message=message
             )
-            channel_mapping_data[str(chat_id)] = sent_msg.message_id
-            success_count += 1
-            await asyncio.sleep(0.04)
+            return str(chat_id), sent_msg.message_id
         except Exception as e:
             logging.error(f"Failed to send to channel {chat_id}: {e}")
-            fail_count += 1
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
                 channels_collection.delete_one({"chat_id": chat_id})
+            return str(chat_id), None
+
+    # Execute all channel send tasks simultaneously
+    tasks = [send_broadcast_task(ch) for ch in all_channels]
+    results = await asyncio.gather(*tasks)
+
+    channel_mapping_data = {}
+    success_count = 0
+    fail_count = 0
+
+    for ch_id, msg_id in results:
+        if msg_id:
+            channel_mapping_data[ch_id] = msg_id
+            success_count += 1
+        else:
+            fail_count += 1
 
     if channel_mapping_data:
         mappings_collection.insert_one({
@@ -257,7 +230,7 @@ def main():
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Channel Broadcast & Reply-Threading Bot with Premium Icons is running...")
+    print("Channel Broadcast & Reply-Threading Bot with Instant Speed & Premium Icons is running...")
     
     application.run_polling(drop_pending_updates=True)
 
