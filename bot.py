@@ -73,7 +73,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info(f"Removed channel: {chat.title} ({chat.id})")
 
 
-# --- 2. Delete Logic (/del command) ---
+# --- 2. Delete Logic (/del command with Parallel Speed) ---
 async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
@@ -90,7 +90,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if mapping:
         channel_msg_map = mapping["channels"]
-        
+
         async def delete_single_msg(ch_str_id, ch_msg_id):
             chat_id = int(ch_str_id)
             try:
@@ -100,7 +100,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Failed to delete in channel {chat_id}: {e}")
                 return False
 
-        # Parallel deletion for max speed
+        # Parallel Deletion for Instant Execution
         tasks = [delete_single_msg(ch_id, msg_id) for ch_id, msg_id in channel_msg_map.items()]
         results = await asyncio.gather(*tasks)
         deleted_count = sum(1 for r in results if r)
@@ -111,20 +111,22 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Core Delivery Engine (Guaranteed Premium Emojis) ---
-async def deliver_message(bot, chat_id, message):
+# --- 3. Core Sender Engine (Copy Message to preserve Premium Emojis & Formats) ---
+async def send_clean_content(bot, chat_id, message, reply_to_channel_msg_id=None):
     """
-    forward_message is the ONLY method in Telegram API that preserves
-    100% custom/animated premium emojis without converting them to standard text.
+    copy_message exactly replicates the message structure including premium custom emojis, 
+    buttons, formatting, and media without attaching any 'Forwarded from' tags.
     """
-    return await bot.forward_message(
+    return await bot.copy_message(
         chat_id=chat_id,
         from_chat_id=message.chat_id,
-        message_id=message.message_id
+        message_id=message.message_id,
+        reply_to_message_id=reply_to_channel_msg_id,
+        reply_markup=message.reply_markup
     )
 
 
-# --- 4. High-Speed Instant Parallel Broadcast ---
+# --- 4. Instant Ultra-Fast Parallel Broadcast Engine ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -138,7 +140,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         await message.reply_text("⚠️ Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
         return
 
-    # --- Case A: Reply Threading ---
+    # --- Case A: Reply Threading Broadcast ---
     if message.reply_to_message:
         replied_msg_id = message.reply_to_message.message_id
         mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
@@ -149,10 +151,11 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             async def send_reply_task(ch_str_id, ch_msg_id):
                 chat_id = int(ch_str_id)
                 try:
-                    await deliver_message(
+                    await send_clean_content(
                         bot=context.bot,
                         chat_id=chat_id,
-                        message=message
+                        message=message,
+                        reply_to_channel_msg_id=int(ch_msg_id)
                     )
                     return True
                 except Exception as e:
@@ -165,19 +168,16 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             success_count = sum(1 for r in results if r)
             fail_count = len(results) - success_count
 
-            await message.reply_text(
-                f"✅ **Reply Sent in Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", 
-                parse_mode="Markdown"
-            )
+            await message.reply_text(f"✅ **Reply Sent in Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Instant Broadcast ---
+    # --- Case B: Fresh Instant Prediction Broadcast ---
     async def send_broadcast_task(ch):
         chat_id = ch["chat_id"]
         try:
-            sent_msg = await deliver_message(
+            sent_msg = await send_clean_content(
                 bot=context.bot,
                 chat_id=chat_id,
                 message=message
@@ -189,7 +189,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 channels_collection.delete_one({"chat_id": chat_id})
             return str(chat_id), None
 
-    # Instant Parallel Broadcast across all channels at once
+    # Parallel Execution: Bhejte hi ek sath sabhi channels par signal jayega
     tasks = [send_broadcast_task(ch) for ch in all_channels]
     results = await asyncio.gather(*tasks)
 
@@ -227,7 +227,7 @@ def main():
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Prediction Broadcast Bot (High-Speed + Premium Emojis Preserved) is running...")
+    print("Prediction Broadcast Bot (Instant + Premium Icons Fixed) is running...")
     
     application.run_polling(drop_pending_updates=True)
 
