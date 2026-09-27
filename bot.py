@@ -24,7 +24,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is alive and running 24x7!"
+    return "VIP Prediction Bot is active 24x7!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -111,19 +111,77 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Delivery via Forward (Guarantees Premium Emojis As-Is) ---
-async def forward_clean_content(bot, chat_id, message):
+# --- 3. Premium Entity Sender Engine (NO Forward Tag + Preserves Icons) ---
+async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None):
     """
-    forward_message preserves ALL custom/animated premium emojis intact.
+    Direct Native Dispatch: Entities pass karne se Premium Emojis/Icons 
+    render hote hain aur Telegram Forward Tag bhi add nahi karta.
     """
-    return await bot.forward_message(
-        chat_id=chat_id,
-        from_chat_id=message.chat_id,
-        message_id=message.message_id
-    )
+    if message.text:
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=message.text,
+            entities=message.entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.photo:
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=message.photo[-1].file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.video:
+        return await bot.send_video(
+            chat_id=chat_id,
+            video=message.video.file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.audio:
+        return await bot.send_audio(
+            chat_id=chat_id,
+            audio=message.audio.file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.voice:
+        return await bot.send_voice(
+            chat_id=chat_id,
+            voice=message.voice.file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.document:
+        return await bot.send_document(
+            chat_id=chat_id,
+            document=message.document.file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    else:
+        # Fallback to copy message
+        return await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
 
 
-# --- 4. Instant Ultra-Fast Parallel Broadcast ---
+# --- 4. High-Speed Parallel Broadcast Engine ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -145,47 +203,48 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         if mapping:
             channel_msg_map = mapping["channels"]
 
-            async def send_reply_task(ch_str_id):
+            async def send_reply_task(ch_str_id, ch_msg_id):
                 chat_id = int(ch_str_id)
                 try:
-                    await forward_clean_content(
+                    await send_clean_with_entities(
                         bot=context.bot,
                         chat_id=chat_id,
-                        message=message
+                        message=message,
+                        reply_to_channel_msg_id=int(ch_msg_id)
                     )
                     return True
                 except Exception as e:
                     logging.error(f"Failed to reply in channel {chat_id}: {e}")
                     return False
 
-            tasks = [send_reply_task(ch_str_id) for ch_str_id in channel_msg_map.keys()]
+            tasks = [send_reply_task(ch_str_id, ch_msg_id) for ch_str_id, ch_msg_id in channel_msg_map.items()]
             results = await asyncio.gather(*tasks)
 
             success_count = sum(1 for r in results if r)
             fail_count = len(results) - success_count
 
-            await message.reply_text(f"✅ **Reply Forwarded to Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
+            await message.reply_text(f"✅ **Reply Broadcasted!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Instant Forward Broadcast ---
+    # --- Case B: Fresh Instant Broadcast ---
     async def send_broadcast_task(ch):
         chat_id = ch["chat_id"]
         try:
-            sent_msg = await forward_clean_content(
+            sent_msg = await send_clean_with_entities(
                 bot=context.bot,
                 chat_id=chat_id,
                 message=message
             )
             return str(chat_id), sent_msg.message_id
         except Exception as e:
-            logging.error(f"Failed to forward to channel {chat_id}: {e}")
+            logging.error(f"Failed to send to channel {chat_id}: {e}")
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
                 channels_collection.delete_one({"chat_id": chat_id})
             return str(chat_id), None
 
-    # Instant Parallel Forwarding to all channels
+    # Ultra-Fast Parallel Dispatch to all channels simultaneously
     tasks = [send_broadcast_task(ch) for ch in all_channels]
     results = await asyncio.gather(*tasks)
 
@@ -207,7 +266,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         })
 
     await message.reply_text(
-        f"✅ **Broadcast Forwarded!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
+        f"✅ **Prediction Signal Broadcasted!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
         parse_mode="Markdown"
     )
 
@@ -223,7 +282,7 @@ def main():
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Prediction Broadcast Bot (Forward Mode - Premium Icons Intact) is running...")
+    print("Prediction Broadcast Bot (Client Ready Setup) is running...")
     
     application.run_polling(drop_pending_updates=True)
 
