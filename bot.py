@@ -73,7 +73,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.info(f"Removed channel: {chat.title} ({chat.id})")
 
 
-# --- 2. Delete Logic (/del command with Parallel Speed) ---
+# --- 2. Delete Logic (/del command) ---
 async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
@@ -100,7 +100,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Failed to delete in channel {chat_id}: {e}")
                 return False
 
-        # Parallel Deletion for Instant Execution
+        # Fast Parallel Deletion
         tasks = [delete_single_msg(ch_id, msg_id) for ch_id, msg_id in channel_msg_map.items()]
         results = await asyncio.gather(*tasks)
         deleted_count = sum(1 for r in results if r)
@@ -111,22 +111,19 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Core Sender Engine (Copy Message to preserve Premium Emojis & Formats) ---
-async def send_clean_content(bot, chat_id, message, reply_to_channel_msg_id=None):
+# --- 3. Delivery via Forward (Guarantees Premium Emojis As-Is) ---
+async def forward_clean_content(bot, chat_id, message):
     """
-    copy_message exactly replicates the message structure including premium custom emojis, 
-    buttons, formatting, and media without attaching any 'Forwarded from' tags.
+    forward_message preserves ALL custom/animated premium emojis intact.
     """
-    return await bot.copy_message(
+    return await bot.forward_message(
         chat_id=chat_id,
         from_chat_id=message.chat_id,
-        message_id=message.message_id,
-        reply_to_message_id=reply_to_channel_msg_id,
-        reply_markup=message.reply_markup
+        message_id=message.message_id
     )
 
 
-# --- 4. Instant Ultra-Fast Parallel Broadcast Engine ---
+# --- 4. Instant Ultra-Fast Parallel Broadcast ---
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -148,48 +145,47 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         if mapping:
             channel_msg_map = mapping["channels"]
 
-            async def send_reply_task(ch_str_id, ch_msg_id):
+            async def send_reply_task(ch_str_id):
                 chat_id = int(ch_str_id)
                 try:
-                    await send_clean_content(
+                    await forward_clean_content(
                         bot=context.bot,
                         chat_id=chat_id,
-                        message=message,
-                        reply_to_channel_msg_id=int(ch_msg_id)
+                        message=message
                     )
                     return True
                 except Exception as e:
                     logging.error(f"Failed to reply in channel {chat_id}: {e}")
                     return False
 
-            tasks = [send_reply_task(ch_str_id, ch_msg_id) for ch_str_id, ch_msg_id in channel_msg_map.items()]
+            tasks = [send_reply_task(ch_str_id) for ch_str_id in channel_msg_map.keys()]
             results = await asyncio.gather(*tasks)
 
             success_count = sum(1 for r in results if r)
             fail_count = len(results) - success_count
 
-            await message.reply_text(f"✅ **Reply Sent in Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
+            await message.reply_text(f"✅ **Reply Forwarded to Channels!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
         else:
             await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
-    # --- Case B: Fresh Instant Prediction Broadcast ---
+    # --- Case B: Fresh Instant Forward Broadcast ---
     async def send_broadcast_task(ch):
         chat_id = ch["chat_id"]
         try:
-            sent_msg = await send_clean_content(
+            sent_msg = await forward_clean_content(
                 bot=context.bot,
                 chat_id=chat_id,
                 message=message
             )
             return str(chat_id), sent_msg.message_id
         except Exception as e:
-            logging.error(f"Failed to send to channel {chat_id}: {e}")
+            logging.error(f"Failed to forward to channel {chat_id}: {e}")
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
                 channels_collection.delete_one({"chat_id": chat_id})
             return str(chat_id), None
 
-    # Parallel Execution: Bhejte hi ek sath sabhi channels par signal jayega
+    # Instant Parallel Forwarding to all channels
     tasks = [send_broadcast_task(ch) for ch in all_channels]
     results = await asyncio.gather(*tasks)
 
@@ -211,7 +207,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         })
 
     await message.reply_text(
-        f"✅ **Broadcast Done!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
+        f"✅ **Broadcast Forwarded!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
         parse_mode="Markdown"
     )
 
@@ -227,7 +223,7 @@ def main():
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Prediction Broadcast Bot (Instant + Premium Icons Fixed) is running...")
+    print("Prediction Broadcast Bot (Forward Mode - Premium Icons Intact) is running...")
     
     application.run_polling(drop_pending_updates=True)
 
