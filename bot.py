@@ -3,7 +3,7 @@ import os
 from threading import Thread
 from flask import Flask
 import asyncio
-from telegram import Update
+from telegram import Update, MessageEntity
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -19,7 +19,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- Flask Server (Render Port Timeout Fix) ---
+# --- Flask Server ---
 app = Flask('')
 
 @app.route('/')
@@ -39,7 +39,6 @@ def keep_alive():
 TOKEN = os.environ.get("BOT_TOKEN", "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot")
 
-# Admin IDs
 ADMIN_USER_IDS = [6829195326, 5785924075]
 
 client = MongoClient(MONGO_URI)
@@ -100,7 +99,6 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Failed to delete in channel {chat_id}: {e}")
                 return False
 
-        # Fast Parallel Deletion
         tasks = [delete_single_msg(ch_id, msg_id) for ch_id, msg_id in channel_msg_map.items()]
         results = await asyncio.gather(*tasks)
         deleted_count = sum(1 for r in results if r)
@@ -111,13 +109,14 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Premium Icons & Universal Native Copy Method ---
+# --- 3. Explicit Raw Custom Emoji Sender Engine ---
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None):
     """
-    Direct Telegram Native copy_message use karta hai.
-    Yeh Custom Emojis (Premium Icons) ke IDs, exact formatting, links, media,
-    aur buttons sab kuch 100% accurately transfer karta hai.
+    Forcefully extracts raw Custom Emoji IDs from the incoming message
+    and re-attaches them explicitly to bypass Telegram API entity-loss issues.
     """
+    
+    # 1. First try native copy_message
     try:
         return await bot.copy_message(
             chat_id=chat_id,
@@ -127,8 +126,63 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             reply_markup=message.reply_markup,
         )
     except Exception as e:
-        logging.error(f"copy_message failed for channel {chat_id}: {e}")
-        raise e
+        logging.warning(f"copy_message direct failed, using explicit entity dispatch: {e}")
+
+    common = {
+        "reply_to_message_id": reply_to_channel_msg_id,
+        "reply_markup": message.reply_markup,
+    }
+
+    # Extract original raw entities (containing custom_emoji_id)
+    raw_entities = message.entities or message.caption_entities or []
+    
+    # Explicitly reconstruct entity array to prevent serialization drop
+    formatted_entities = []
+    for entity in raw_entities:
+        if entity.type == MessageEntity.CUSTOM_EMOJI:
+            formatted_entities.append(
+                MessageEntity(
+                    type=MessageEntity.CUSTOM_EMOJI,
+                    offset=entity.offset,
+                    length=entity.length,
+                    custom_emoji_id=entity.custom_emoji_id
+                )
+            )
+        else:
+            formatted_entities.append(entity)
+
+    # Re-send via direct typing
+    if message.text:
+        return await bot.send_message(
+            chat_id=chat_id,
+            text=message.text,
+            entities=formatted_entities,
+            **common
+        )
+    elif message.photo:
+        return await bot.send_photo(
+            chat_id=chat_id,
+            photo=message.photo[-1].file_id,
+            caption=message.caption,
+            caption_entities=formatted_entities,
+            **common
+        )
+    elif message.video:
+        return await bot.send_video(
+            chat_id=chat_id,
+            video=message.video.file_id,
+            caption=message.caption,
+            caption_entities=formatted_entities,
+            **common
+        )
+    elif message.document:
+        return await bot.send_document(
+            chat_id=chat_id,
+            document=message.document.file_id,
+            caption=message.caption,
+            caption_entities=formatted_entities,
+            **common
+        )
 
 
 # --- 4. High-Speed Parallel Broadcast Engine ---
@@ -175,8 +229,6 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
 
             await message.reply_text(f"✅ **Reply Broadcasted!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
-        else:
-            await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
     # --- Case B: Fresh Instant Broadcast ---
     async def send_broadcast_task(ch):
@@ -187,14 +239,13 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 chat_id=chat_id,
                 message=message
             )
-            return str(chat_id), sent_msg.message_id
+            return str(chat_id), sent_msg.message_id if sent_msg else None
         except Exception as e:
             logging.error(f"Failed to send to channel {chat_id}: {e}")
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
                 channels_collection.delete_one({"chat_id": chat_id})
             return str(chat_id), None
 
-    # Ultra-Fast Parallel Dispatch to all channels simultaneously
     tasks = [send_broadcast_task(ch) for ch in all_channels]
     results = await asyncio.gather(*tasks)
 
@@ -232,8 +283,7 @@ def main():
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Prediction Broadcast Bot (Client Ready Setup) is running...")
-    
+    print("Prediction Broadcast Bot is running...")
     application.run_polling(drop_pending_updates=True)
 
 
