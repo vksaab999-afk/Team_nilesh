@@ -82,7 +82,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
     if not message.reply_to_message:
-        await message.reply_text("тЪая╕П Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
+        await message.reply_text("⚠️ Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
         return
 
     replied_msg_id = message.reply_to_message.message_id
@@ -106,95 +106,18 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deleted_count = sum(1 for r in results if r)
 
         mappings_collection.delete_one({"admin_msg_id": replied_msg_id})
-        await message.reply_text(f"ЁЯЧСя╕П Sabhi channels se message delete kar diya gaya hai! ({deleted_count} channels)")
+        await message.reply_text(f"🗑️ Sabhi channels se message delete kar diya gaya hai! ({deleted_count} channels)")
     else:
-        await message.reply_text("тЪая╕П Yeh message kisi broadcast record mein nahi mila.")
+        await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Entity-preserving sender (keeps premium/custom emoji entities) ---
+# --- 3. Premium Icons & Universal Native Copy Method ---
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None):
-    """Send mixed text with the original Telegram entities intact.
-
-    Rebuilding a message from ``message.text`` can downgrade or lose
-    ``custom_emoji`` entities, especially when a premium emoji is mixed with
-    normal text. For text/captions we therefore pass the original entity
-    objects explicitly with parse_mode disabled. This is important because
-    custom emoji require their ``custom_emoji_id`` entity data; the visible
-    Unicode character alone is not enough. Native copyMessage remains the
-    fallback for media and unusual message types.
     """
-
-    common = {
-        "reply_to_message_id": reply_to_channel_msg_id,
-        "reply_markup": message.reply_markup,
-    }
-
-    # Do not let the library parse/rewrite the text. Telegram needs the
-    # original CUSTOM_EMOJI entities and their custom_emoji_id values.
-    if message.text:
-        entities = list(message.entities or [])
-        custom_count = sum(
-            1 for entity in entities
-            if getattr(entity, "type", None) == "custom_emoji"
-            or getattr(entity, "custom_emoji_id", None)
-        )
-        logging.info(
-            "Sending text %s with %d entities (%d custom emoji)",
-            message.message_id,
-            len(entities),
-            custom_count,
-        )
-        return await bot.send_message(
-            chat_id=chat_id,
-            text=message.text,
-            entities=entities,
-            parse_mode=None,
-            **common,
-        )
-
-    if message.photo:
-        return await bot.send_photo(
-            chat_id=chat_id,
-            photo=message.photo[-1].file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-            **common,
-        )
-    if message.video:
-        return await bot.send_video(
-            chat_id=chat_id,
-            video=message.video.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-            **common,
-        )
-    if message.audio:
-        return await bot.send_audio(
-            chat_id=chat_id,
-            audio=message.audio.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-            **common,
-        )
-    if message.voice:
-        return await bot.send_voice(
-            chat_id=chat_id,
-            voice=message.voice.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-            **common,
-        )
-    if message.document:
-        return await bot.send_document(
-            chat_id=chat_id,
-            document=message.document.file_id,
-            caption=message.caption,
-            caption_entities=list(message.caption_entities or []),
-            **common,
-        )
-
-    # Native copy is retained for stickers, animations, polls, and other
-    # message types not covered by the explicit send methods above.
+    Direct Telegram Native copy_message use karta hai.
+    Yeh Custom Emojis (Premium Icons) ke IDs, exact formatting, links, media,
+    aur buttons sab kuch 100% accurately transfer karta hai.
+    """
     try:
         return await bot.copy_message(
             chat_id=chat_id,
@@ -203,16 +126,9 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             reply_to_message_id=reply_to_channel_msg_id,
             reply_markup=message.reply_markup,
         )
-    except Exception:
-        # Keep a compatibility fallback for message types/environments where
-        # Telegram refuses copyMessage. The explicit entity fields are still
-        # passed so ordinary formatted text and captions remain intact.
-        logging.exception(
-            "copy_message failed for %s; using typed dispatch fallback",
-            message.message_id,
-        )
-
-        raise
+    except Exception as e:
+        logging.error(f"copy_message failed for channel {chat_id}: {e}")
+        raise e
 
 
 # --- 4. High-Speed Parallel Broadcast Engine ---
@@ -226,7 +142,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     all_channels = list(channels_collection.find({}))
 
     if not all_channels:
-        await message.reply_text("тЪая╕П Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
+        await message.reply_text("⚠️ Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
         return
 
     # --- Case A: Reply Threading Broadcast ---
@@ -257,10 +173,10 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             success_count = sum(1 for r in results if r)
             fail_count = len(results) - success_count
 
-            await message.reply_text(f"тЬЕ **Reply Broadcasted!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
+            await message.reply_text(f"✅ **Reply Broadcasted!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
         else:
-            await message.reply_text("тЪая╕П Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
+            await message.reply_text("⚠️ Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
     # --- Case B: Fresh Instant Broadcast ---
     async def send_broadcast_task(ch):
@@ -300,7 +216,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         })
 
     await message.reply_text(
-        f"тЬЕ **Prediction Signal Broadcasted!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
+        f"✅ **Prediction Signal Broadcasted!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
         parse_mode="Markdown"
     )
 
@@ -323,4 +239,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
