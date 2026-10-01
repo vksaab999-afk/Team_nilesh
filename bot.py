@@ -3,7 +3,7 @@ import os
 from threading import Thread
 from flask import Flask
 import asyncio
-from telegram import Update, MessageEntity
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -19,7 +19,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- Flask Server ---
+# --- Flask Server (Render Port Timeout Fix) ---
 app = Flask('')
 
 @app.route('/')
@@ -39,12 +39,45 @@ def keep_alive():
 TOKEN = os.environ.get("BOT_TOKEN", "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot")
 
+# Admin IDs
 ADMIN_USER_IDS = [6829195326, 5785924075]
 
 client = MongoClient(MONGO_URI)
 db = client["telegram_broadcast_bot"]
 channels_collection = db["active_channels"]
 mappings_collection = db["broadcast_mappings"]
+
+
+# --- Helper: Convert Entities to HTML with <tg-emoji> ---
+def convert_text_to_html_with_custom_emojis(text, entities):
+    if not text or not entities:
+        return text
+
+    # Sort entities reverse offset wise so string replacement doesn't shift positions
+    sorted_entities = sorted(entities, key=lambda x: x.offset, reverse=True)
+    
+    html_text = text
+    for entity in sorted_entities:
+        start = entity.offset
+        end = entity.offset + entity.length
+        substring = html_text[start:end]
+
+        if entity.type == "custom_emoji" or getattr(entity, "custom_emoji_id", None):
+            emoji_id = entity.custom_emoji_id
+            replacement = f'<tg-emoji emoji-id="{emoji_id}">{substring}</tg-emoji>'
+            html_text = html_text[:start] + replacement + html_text[end:]
+        elif entity.type == "bold":
+            html_text = html_text[:start] + f'<b>{substring}</b>' + html_text[end:]
+        elif entity.type == "italic":
+            html_text = html_text[:start] + f'<i>{substring}</i>' + html_text[end:]
+        elif entity.type == "code":
+            html_text = html_text[:start] + f'<code>{substring}</code>' + html_text[end:]
+        elif entity.type == "pre":
+            html_text = html_text[:start] + f'<pre>{substring}</pre>' + html_text[end:]
+        elif entity.type == "text_link":
+            html_text = html_text[:start] + f'<a href="{entity.url}">{substring}</a>' + html_text[end:]
+
+    return html_text
 
 
 # --- 1. Dynamic Channel Tracking ---
@@ -81,7 +114,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
     if not message.reply_to_message:
-        await message.reply_text("⚠️ Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
+        await message.reply_text("⚠️️ Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
         return
 
     replied_msg_id = message.reply_to_message.message_id
@@ -109,80 +142,57 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. Explicit Raw Custom Emoji Sender Engine ---
+# --- 3. HTML Entity Preserving Sender ---
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None):
-    """
-    Forcefully extracts raw Custom Emoji IDs from the incoming message
-    and re-attaches them explicitly to bypass Telegram API entity-loss issues.
-    """
-    
-    # 1. First try native copy_message
-    try:
-        return await bot.copy_message(
-            chat_id=chat_id,
-            from_chat_id=message.chat_id,
-            message_id=message.message_id,
-            reply_to_message_id=reply_to_channel_msg_id,
-            reply_markup=message.reply_markup,
-        )
-    except Exception as e:
-        logging.warning(f"copy_message direct failed, using explicit entity dispatch: {e}")
-
     common = {
         "reply_to_message_id": reply_to_channel_msg_id,
         "reply_markup": message.reply_markup,
     }
 
-    # Extract original raw entities (containing custom_emoji_id)
-    raw_entities = message.entities or message.caption_entities or []
-    
-    # Explicitly reconstruct entity array to prevent serialization drop
-    formatted_entities = []
-    for entity in raw_entities:
-        if entity.type == MessageEntity.CUSTOM_EMOJI:
-            formatted_entities.append(
-                MessageEntity(
-                    type=MessageEntity.CUSTOM_EMOJI,
-                    offset=entity.offset,
-                    length=entity.length,
-                    custom_emoji_id=entity.custom_emoji_id
-                )
-            )
-        else:
-            formatted_entities.append(entity)
-
-    # Re-send via direct typing
     if message.text:
+        formatted_html = convert_text_to_html_with_custom_emojis(message.text, message.entities)
         return await bot.send_message(
             chat_id=chat_id,
-            text=message.text,
-            entities=formatted_entities,
+            text=formatted_html,
+            parse_mode="HTML",
             **common
         )
-    elif message.photo:
+
+    caption_html = convert_text_to_html_with_custom_emojis(message.caption, message.caption_entities)
+
+    if message.photo:
         return await bot.send_photo(
             chat_id=chat_id,
             photo=message.photo[-1].file_id,
-            caption=message.caption,
-            caption_entities=formatted_entities,
+            caption=caption_html,
+            parse_mode="HTML",
             **common
         )
-    elif message.video:
+    if message.video:
         return await bot.send_video(
             chat_id=chat_id,
             video=message.video.file_id,
-            caption=message.caption,
-            caption_entities=formatted_entities,
+            caption=caption_html,
+            parse_mode="HTML",
             **common
         )
-    elif message.document:
+    if message.document:
         return await bot.send_document(
             chat_id=chat_id,
             document=message.document.file_id,
-            caption=message.caption,
-            caption_entities=formatted_entities,
+            caption=caption_html,
+            parse_mode="HTML",
             **common
         )
+
+    # Fallback to direct copy for other media types
+    return await bot.copy_message(
+        chat_id=chat_id,
+        from_chat_id=message.chat_id,
+        message_id=message.message_id,
+        reply_to_message_id=reply_to_channel_msg_id,
+        reply_markup=message.reply_markup,
+    )
 
 
 # --- 4. High-Speed Parallel Broadcast Engine ---
@@ -239,7 +249,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 chat_id=chat_id,
                 message=message
             )
-            return str(chat_id), sent_msg.message_id if sent_msg else None
+            return str(chat_id), sent_msg.message_id
         except Exception as e:
             logging.error(f"Failed to send to channel {chat_id}: {e}")
             if "bot was kicked" in str(e).lower() or "chat not found" in str(e).lower():
