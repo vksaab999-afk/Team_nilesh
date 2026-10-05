@@ -36,7 +36,7 @@ def keep_alive():
 
 
 # --- Configuration ---
-TOKEN = os.environ.get("BOT_TOKEN", "8864401575:AAGa2k4LD_aeP_kgZbTUAoEFVDzfve3zUiI")
+TOKEN = os.environ.get("BOT_TOKEN", "8751758181:AAGCanhFbZN9IeEQowoT_fUpioTYfIsMmWE")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://predictionbot:raja0001@predictionbot.nbttlvr.mongodb.net/telegram_broadcast_bot?retryWrites=true&w=majority&appName=Predictionbot")
 
 # Admin IDs
@@ -46,38 +46,6 @@ client = MongoClient(MONGO_URI)
 db = client["telegram_broadcast_bot"]
 channels_collection = db["active_channels"]
 mappings_collection = db["broadcast_mappings"]
-
-
-# --- Helper: Convert Entities to HTML with <tg-emoji> ---
-def convert_text_to_html_with_custom_emojis(text, entities):
-    if not text or not entities:
-        return text
-
-    # Sort entities reverse offset wise so string replacement doesn't shift positions
-    sorted_entities = sorted(entities, key=lambda x: x.offset, reverse=True)
-    
-    html_text = text
-    for entity in sorted_entities:
-        start = entity.offset
-        end = entity.offset + entity.length
-        substring = html_text[start:end]
-
-        if entity.type == "custom_emoji" or getattr(entity, "custom_emoji_id", None):
-            emoji_id = entity.custom_emoji_id
-            replacement = f'<tg-emoji emoji-id="{emoji_id}">{substring}</tg-emoji>'
-            html_text = html_text[:start] + replacement + html_text[end:]
-        elif entity.type == "bold":
-            html_text = html_text[:start] + f'<b>{substring}</b>' + html_text[end:]
-        elif entity.type == "italic":
-            html_text = html_text[:start] + f'<i>{substring}</i>' + html_text[end:]
-        elif entity.type == "code":
-            html_text = html_text[:start] + f'<code>{substring}</code>' + html_text[end:]
-        elif entity.type == "pre":
-            html_text = html_text[:start] + f'<pre>{substring}</pre>' + html_text[end:]
-        elif entity.type == "text_link":
-            html_text = html_text[:start] + f'<a href="{entity.url}">{substring}</a>' + html_text[end:]
-
-    return html_text
 
 
 # --- 1. Dynamic Channel Tracking ---
@@ -114,7 +82,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
     if not message.reply_to_message:
-        await message.reply_text("⚠️️ Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
+        await message.reply_text("тЪая╕П Kripya us broadcast kiye gaye message par reply karke `/del` likhein jise delete karna hai.")
         return
 
     replied_msg_id = message.reply_to_message.message_id
@@ -132,67 +100,85 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Failed to delete in channel {chat_id}: {e}")
                 return False
 
+        # Fast Parallel Deletion
         tasks = [delete_single_msg(ch_id, msg_id) for ch_id, msg_id in channel_msg_map.items()]
         results = await asyncio.gather(*tasks)
         deleted_count = sum(1 for r in results if r)
 
         mappings_collection.delete_one({"admin_msg_id": replied_msg_id})
-        await message.reply_text(f"🗑️ Sabhi channels se message delete kar diya gaya hai! ({deleted_count} channels)")
+        await message.reply_text(f"ЁЯЧСя╕П Sabhi channels se message delete kar diya gaya hai! ({deleted_count} channels)")
     else:
-        await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
+        await message.reply_text("тЪая╕П Yeh message kisi broadcast record mein nahi mila.")
 
 
-# --- 3. HTML Entity Preserving Sender ---
+# --- 3. Premium Entity Sender Engine (NO Forward Tag + Preserves Icons) ---
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None):
-    common = {
-        "reply_to_message_id": reply_to_channel_msg_id,
-        "reply_markup": message.reply_markup,
-    }
-
+    """
+    Direct Native Dispatch: Entities pass karne se Premium Emojis/Icons 
+    render hote hain aur Telegram Forward Tag bhi add nahi karta.
+    """
     if message.text:
-        formatted_html = convert_text_to_html_with_custom_emojis(message.text, message.entities)
         return await bot.send_message(
             chat_id=chat_id,
-            text=formatted_html,
-            parse_mode="HTML",
-            **common
+            text=message.text,
+            entities=message.entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
         )
-
-    caption_html = convert_text_to_html_with_custom_emojis(message.caption, message.caption_entities)
-
-    if message.photo:
+    elif message.photo:
         return await bot.send_photo(
             chat_id=chat_id,
             photo=message.photo[-1].file_id,
-            caption=caption_html,
-            parse_mode="HTML",
-            **common
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
         )
-    if message.video:
+    elif message.video:
         return await bot.send_video(
             chat_id=chat_id,
             video=message.video.file_id,
-            caption=caption_html,
-            parse_mode="HTML",
-            **common
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
         )
-    if message.document:
+    elif message.audio:
+        return await bot.send_audio(
+            chat_id=chat_id,
+            audio=message.audio.file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.voice:
+        return await bot.send_voice(
+            chat_id=chat_id,
+            voice=message.voice.file_id,
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
+    elif message.document:
         return await bot.send_document(
             chat_id=chat_id,
             document=message.document.file_id,
-            caption=caption_html,
-            parse_mode="HTML",
-            **common
+            caption=message.caption,
+            caption_entities=message.caption_entities,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
         )
-
-    # Fallback to direct copy for other media types
-    return await bot.copy_message(
-        chat_id=chat_id,
-        from_chat_id=message.chat_id,
-        message_id=message.message_id,
-        reply_to_message_id=reply_to_channel_msg_id,
-        reply_markup=message.reply_markup,
-    )
+    else:
+        # Fallback to copy message
+        return await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+            reply_to_message_id=reply_to_channel_msg_id,
+            reply_markup=message.reply_markup
+        )
 
 
 # --- 4. High-Speed Parallel Broadcast Engine ---
@@ -206,7 +192,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     all_channels = list(channels_collection.find({}))
 
     if not all_channels:
-        await message.reply_text("⚠️ Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
+        await message.reply_text("тЪая╕П Pehle kisi channel mein bot ko admin banayein, koi channel connected nahi hai!")
         return
 
     # --- Case A: Reply Threading Broadcast ---
@@ -237,8 +223,10 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
             success_count = sum(1 for r in results if r)
             fail_count = len(results) - success_count
 
-            await message.reply_text(f"✅ **Reply Broadcasted!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
+            await message.reply_text(f"тЬЕ **Reply Broadcasted!**\nSuccess: `{success_count}` | Failed: `{fail_count}`", parse_mode="Markdown")
             return
+        else:
+            await message.reply_text("тЪая╕П Yeh message kisi broadcast post ka reply nahi hai, normal broadcast kar raha hoon.")
 
     # --- Case B: Fresh Instant Broadcast ---
     async def send_broadcast_task(ch):
@@ -256,6 +244,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
                 channels_collection.delete_one({"chat_id": chat_id})
             return str(chat_id), None
 
+    # Ultra-Fast Parallel Dispatch to all channels simultaneously
     tasks = [send_broadcast_task(ch) for ch in all_channels]
     results = await asyncio.gather(*tasks)
 
@@ -277,7 +266,7 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
         })
 
     await message.reply_text(
-        f"✅ **Prediction Signal Broadcasted!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
+        f"тЬЕ **Prediction Signal Broadcasted!**\nSent to: `{success_count}` channels | Failed: `{fail_count}`", 
         parse_mode="Markdown"
     )
 
@@ -293,9 +282,11 @@ def main():
     handler = MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_broadcast_message)
     application.add_handler(handler)
 
-    print("Prediction Broadcast Bot is running...")
+    print("Prediction Broadcast Bot (Client Ready Setup) is running...")
+    
     application.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
     main()
+            
