@@ -23,7 +23,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
 # Config (NO hardcoded secrets)
@@ -235,7 +235,9 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             )
             _warn_if_stripped(sent, caption_entities, chat_id)
             return sent
-        return await safe_call(_send)# --- VIDEO ---
+        return await safe_call(_send)
+
+    # --- VIDEO ---
     if message.video:
         async def _send():
             sent = await bot.send_video(
@@ -460,7 +462,8 @@ async def post_init(application):
     await check_premium_capability(application.bot)
 
 def main():
-    keep_alive()application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    keep_alive()
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     application.add_handler(
         ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER)
@@ -477,5 +480,5 @@ def main():
     application.run_polling(drop_pending_updates=True)
 
 
-if name == "main":
+if __name__ == "__main__":
     main()
