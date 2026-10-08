@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ["BOT_TOKEN"]
 MONGO_URI = os.environ["MONGO_URI"]
 
-ADMIN_USER_IDS = [int(x) for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
+# Admin User IDs List (Aage aur admin add karne ke liye comma ',' lagayein)
+ADMIN_USER_IDS = [5785924075]
 
 # ------------------------------------------------------------------
 # Flask keep-alive
