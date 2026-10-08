@@ -32,7 +32,7 @@ TOKEN = os.environ["BOT_TOKEN"]
 MONGO_URI = os.environ["MONGO_URI"]
 
 # Admin User IDs List (Aage aur admin add karne ke liye comma ',' lagayein)
-ADMIN_USER_IDS = [5785924075]
+ADMIN_USER_IDS = [5785924075 ,6745147112]
 
 # ------------------------------------------------------------------
 # Flask keep-alive
