@@ -91,7 +91,7 @@ def get_welcome_settings():
     if not doc:
         default_settings = {
             "_id": "welcome_config",
-            "text": "👋 Welcome **{name}** to our Official Channel!\n\nPlease click the button below to verify yourself and start getting updates.",
+            "text": None,
             "video_id": None,
             "video_caption": None,
             "video_entities": None,
@@ -104,8 +104,6 @@ def get_welcome_settings():
             "audio_caption": None,
             "audio_entities": None,
             "audio_buttons": [],
-            "button_text": "🔴 CLICK HERE TO GET DIRECT HACK 🔴",
-            "button_url": None,
         }
         settings_collection.insert_one(default_settings)
         return default_settings
@@ -146,21 +144,16 @@ def deserialize_entities(raw_entities):
         ))
     return res
 
-def build_inline_keyboard(buttons_list, fallback_text="✅ Verify Now", fallback_url=None):
-    if buttons_list:
-        keyboard = []
-        for btn in buttons_list:
-            text = btn.get("text", "Button")
-            url = btn.get("url")
-            if url:
-                keyboard.append([InlineKeyboardButton(text, url=url)])
-            else:
-                keyboard.append([InlineKeyboardButton(text, callback_data="verify_user")])
-        return InlineKeyboardMarkup(keyboard)
-    else:
-        if fallback_url:
-            return InlineKeyboardMarkup([[InlineKeyboardButton(fallback_text, url=fallback_url)]])
-        return InlineKeyboardMarkup([[InlineKeyboardButton(fallback_text, callback_data="verify_user")]])
+def build_inline_keyboard(buttons_list):
+    if not buttons_list:
+        return None
+    keyboard = []
+    for btn in buttons_list:
+        text = btn.get("text", "Button")
+        url = btn.get("url")
+        if url:
+            keyboard.append([InlineKeyboardButton(text, url=url)])
+    return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 def parse_buttons_text(raw_text):
     lines = raw_text.strip().split("\n")
@@ -344,7 +337,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (Custom Buttons Per Media Engine)
+# Join Request Handler (Direct Media & Pure Link Buttons Only)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -353,8 +346,12 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     user_first_name = user.first_name or "User"
 
-    fallback_text = settings.get("button_text", "🔴 CLICK HERE TO GET DIRECT HACK 🔴")
-    fallback_url = settings.get("button_url")
+    # Auto-save user to database on join request trigger
+    users_collection.update_one(
+        {"user_id": user.id},
+        {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
+        upsert=True,
+    )
 
     try:
         # 1. Video
@@ -362,7 +359,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             vid_cap = settings.get("video_caption") or ""
             vid_cap = vid_cap.replace("{name}", f"**{user_first_name}**")
             vid_entities = deserialize_entities(settings.get("video_entities"))
-            vid_markup = build_inline_keyboard(settings.get("video_buttons"), fallback_text, fallback_url)
+            vid_markup = build_inline_keyboard(settings.get("video_buttons"))
             
             await context.bot.send_video(
                 chat_id=user.id,
@@ -377,7 +374,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             apk_cap = settings.get("apk_caption") or ""
             apk_cap = apk_cap.replace("{name}", f"**{user_first_name}**")
             apk_entities = deserialize_entities(settings.get("apk_entities"))
-            apk_markup = build_inline_keyboard(settings.get("apk_buttons"), fallback_text, fallback_url)
+            apk_markup = build_inline_keyboard(settings.get("apk_buttons"))
             
             await context.bot.send_document(
                 chat_id=user.id,
@@ -392,7 +389,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             aud_cap = settings.get("audio_caption") or ""
             aud_cap = aud_cap.replace("{name}", f"**{user_first_name}**")
             aud_entities = deserialize_entities(settings.get("audio_entities"))
-            aud_markup = build_inline_keyboard(settings.get("audio_buttons"), fallback_text, fallback_url)
+            aud_markup = build_inline_keyboard(settings.get("audio_buttons"))
             
             await context.bot.send_audio(
                 chat_id=user.id,
@@ -406,16 +403,14 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         if settings.get("text"):
             raw_text = settings.get("text")
             formatted_text = raw_text.replace("{name}", f"**{user_first_name}**")
-            text_markup = build_inline_keyboard([], fallback_text, fallback_url)
             
             await context.bot.send_message(
                 chat_id=user.id,
                 text=formatted_text,
-                reply_markup=text_markup,
                 parse_mode="Markdown"
             )
 
-        logger.info(f"✅ Dynamic multi-media join package delivered to {user.first_name} ({user.id})")
+        logger.info(f"✅ Pure media package delivered to {user.first_name} ({user.id})")
     except Exception as e:
         logger.error(f"❌ Failed to send join request package to {user.id}: {e}")
 
@@ -427,26 +422,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user = query.from_user
     await query.answer()
 
-    if query.data == "verify_user":
-        users_collection.update_one(
-            {"user_id": user.id},
-            {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
-            upsert=True,
-        )
-        await query.edit_message_text(
-            f"🎉 **Verification Successful!**\n\nWelcome **{user.first_name}**, aap hamare VIP system me verify ho chuke hain.",
-            parse_mode="Markdown"
-        )
-
-    elif query.data == "set_custom_buttons":
+    if query.data == "set_custom_buttons":
         admin_states[user.id] = "awaiting_custom_buttons"
         instr = (
-            "🔘 **ADD MULTIPLE BUTTONS ENGINE**\n\n"
-            "Niche diye gaye format me ek hi message bhejey:\n\n"
-            "`Button 1: 👑 VIP CHANNEL - https://t.me/yourvipchannel`\n"
-            "`Button 2: 🚀 REGISTRATION LINK - https://t.me/reglink`\n"
+            "🔘 **ADD COLORFUL & CUSTOM BUTTONS ENGINE**\n\n"
+            "Format mein message bhejey (Use 🔴 for Danger, 🟢 for Success, 🔵 for Primary):\n\n"
+            "`Button 1: 🔴 DM FOR LOSS RECOVERY - https://t.me/yourusername`\n"
+            "`Button 2: 🟢 REGISTRATION LINK - https://t.me/reglink`\n"
+            "`Button 3: 🔵 VIP CHANNEL - https://t.me/vipchannel`\n"
             "`Target: Video`\n\n"
-            "*(Target me aap `Video`, `APK`, ya `Audio` likh sakte hain)*"
+            "*(Target options: `Video`, `APK`, ya `Audio`)*"
         )
         await query.edit_message_text(instr, parse_mode="Markdown")
 
@@ -459,8 +444,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             "video": "🎥 Nayi Video file bhejey (With Caption & Emojis):",
             "apk": "📁 Nayi APK / Document file bhejey (With Caption & Emojis):",
             "audio": "🎵 Nayi Audio file bhejey (With Caption & Emojis):",
-            "btn_text": "🔘 Default Button Name bhejey:",
-            "btn_url": "🔗 Default Button URL link bhejey (Ya 'none' write karein for Callback):"
         }
         await query.edit_message_text(labels.get(setting_type, "Send input:"))
 
@@ -490,8 +473,7 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
     keyboard = [
         [InlineKeyboardButton("🎥 Change Video", callback_data="set_video"), InlineKeyboardButton("📁 Change APK", callback_data="set_apk")],
         [InlineKeyboardButton("🎵 Change Audio", callback_data="set_audio"), InlineKeyboardButton("📝 Change Text", callback_data="set_text")],
-        [InlineKeyboardButton("🔘 Add/Set Media Buttons", callback_data="set_custom_buttons")],
-        [InlineKeyboardButton("⚙️ Edit Default Button Text", callback_data="set_btn_text"), InlineKeyboardButton("🔗 Edit Default Button Link", callback_data="set_btn_url")],
+        [InlineKeyboardButton("🔘 Add/Set Colorful Buttons", callback_data="set_custom_buttons")],
     ]
 
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -638,17 +620,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("✅ Audio with exact Caption & Premium Emojis update ho gayi hai!")
             return
 
-        elif state == "awaiting_btn_text" and message.text:
-            update_welcome_setting({"button_text": message.text})
-            await message.reply_text("✅ Default Button Text update ho gaya hai!")
-            return
-
-        elif state == "awaiting_btn_url" and message.text:
-            url_val = None if message.text.lower() == "none" else message.text
-            update_welcome_setting({"button_url": url_val})
-            await message.reply_text("✅ Default Button Link update ho gaya hai!")
-            return
-
     # 1. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
     if chat.id == ADMIN_GROUP_ID:
         thread_id = message.message_thread_id
@@ -785,7 +756,7 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages))
 
-    logger.info("🤖 VIP Premium Multi-Button Broadcast Bot is running...")
+    logger.info("🤖 VIP Join Request Broadcast Bot is running...")
     
     app_bot.run_polling(drop_pending_updates=True)
 
