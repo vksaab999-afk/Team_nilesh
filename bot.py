@@ -336,10 +336,24 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("⚠️ Kisi channel me bot Admin nahi hai!")
             return
 
+        # Check if this message is replying to a previously broadcasted message in channels
+        reply_mapping = None
+        if message.reply_to_message:
+            replied_admin_msg_id = message.reply_to_message.message_id
+            mapping_doc = mappings_collection.find_one({"admin_msg_id": replied_admin_msg_id})
+            if mapping_doc:
+                reply_mapping = mapping_doc.get("channels", {})
+
         async def send_to_ch(ch):
             chat_id = ch["chat_id"]
+            reply_msg_id = reply_mapping.get(str(chat_id)) if reply_mapping else None
             try:
-                sent = await send_clean_with_entities(context.bot, chat_id, message)
+                sent = await send_clean_with_entities(
+                    context.bot, 
+                    chat_id, 
+                    message, 
+                    reply_to_channel_msg_id=reply_msg_id
+                )
                 return str(chat_id), sent.message_id
             except Exception:
                 return str(chat_id), None
@@ -348,7 +362,11 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         mapping = {cid: mid for cid, mid in results if mid}
         if mapping:
             mappings_collection.update_one({"admin_msg_id": message.message_id}, {"$set": {"channels": mapping}}, upsert=True)
-        await message.reply_text(f"📢 Broadcasted to {len(mapping)} Channels!")
+        
+        if reply_mapping:
+            await message.reply_text(f"✅ Reply Broadcasted to {len(mapping)} Channels!")
+        else:
+            await message.reply_text(f"📢 Broadcasted to {len(mapping)} Channels!")
 
     # C. Mode 2: User Broadcast Mode (All Users)
     elif current_mode == "user":
