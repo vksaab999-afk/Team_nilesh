@@ -251,6 +251,29 @@ async def set_broadcast_mode(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 # ------------------------------------------------------------------
+# Stats Command (/stats)
+# ------------------------------------------------------------------
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+
+    total_users = users_collection.count_documents({"user_id": {"$nin": ADMIN_USER_IDS}})
+    total_channels = channels_collection.count_documents({})
+    current_mode = admin_modes.get(user.id, "channel")
+
+    mode_str = "📢 Prediction Mode (Channels)" if current_mode == "channel" else "👥 Broadcast Mode (Users)"
+
+    stats_text = (
+        "📊 **BOT STATISTICS**\n\n"
+        f"👥 **Total Bot Users:** `{total_users}`\n"
+        f"📢 **Connected Channels:** `{total_channels}`\n"
+        f"⚙️ **Current Mode:** {mode_str}"
+    )
+
+    await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+# ------------------------------------------------------------------
 # Delete Command (/del)
 # ------------------------------------------------------------------
 async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,6 +423,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("prediction", set_prediction_mode))
     application.add_handler(CommandHandler("broadcast", set_broadcast_mode))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("del", delete_broadcast))
     
     application.add_handler(
