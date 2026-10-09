@@ -99,7 +99,7 @@ async def check_premium_capability(bot) -> bool:
     return _PREMIUM_OK
 
 # ------------------------------------------------------------------
-# Entity sanitization
+# Entity sanitization & Safe Call (With Failed Broadcast Retry)
 # ------------------------------------------------------------------
 _ALLOWED_ENTITY_TYPES = {
     MessageEntity.MENTION, MessageEntity.HASHTAG, MessageEntity.CASHTAG,
@@ -117,16 +117,21 @@ def sanitize_entities(entities):
     cleaned = [e for e in entities if e.type in _ALLOWED_ENTITY_TYPES]
     return cleaned or None
 
+# Feature: Failed Broadcast Retrier (Safe Call with Backoff)
 async def safe_call(coro_factory, retries: int = 3):
     for attempt in range(retries):
         try:
             return await coro_factory()
         except RetryAfter as e:
             wait = int(e.retry_after) + 1
+            logger.warning(f"FloodWait encountered. Retrying in {wait}s... (Attempt {attempt+1}/{retries})")
             await asyncio.sleep(wait)
         except (Forbidden, BadRequest) as e:
-            logger.error(f"Error in safe_call: {e}")
+            logger.error(f"Failed call permanently: {e}")
             raise
+        except Exception as e:
+            logger.warning(f"Transient error: {e}. Retrying... (Attempt {attempt+1}/{retries})")
+            await asyncio.sleep(2)
     return await coro_factory()
 
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None):
@@ -274,6 +279,117 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(stats_text, parse_mode="Markdown")
 
 # ------------------------------------------------------------------
+# Feature: Interactive Poll & Quiz Engine (/poll & /quiz)
+# Format: /poll Question | Opt1 | Opt2 | Opt3
+# Format: /quiz Question | Opt1 | Opt2 | CorrectIndex (0-based)
+# ------------------------------------------------------------------
+async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+
+    text = " ".join(context.args)
+    if "|" not in text:
+        await update.message.reply_text("⚠️ **Format:** `/poll Question | Option1 | Option2 | Option3`", parse_mode="Markdown")
+        return
+
+    parts = [p.strip() for p in text.split("|") if p.strip()]
+    if len(parts) < 3:
+        await update.message.reply_text("⚠️ Minimum 1 question aur 2 options hona zaroori hain!", parse_mode="Markdown")
+        return
+
+    question = parts[0]
+    options = parts[1:]
+    current_mode = admin_modes.get(user.id, "channel")
+
+    if current_mode == "channel":
+        all_channels = list(channels_collection.find({}))
+        success = 0
+        for ch in all_channels:
+            try:
+                await safe_call(lambda: context.bot.send_poll(chat_id=ch["chat_id"], question=question, options=options, is_anonymous=True))
+                success += 1
+            except Exception as e:
+                logger.error(f"Poll send failed for channel {ch['chat_id']}: {e}")
+        await update.message.reply_text(f"📊 Poll broadcasted to {success}/{len(all_channels)} Channels!")
+    else:
+        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+        success = 0
+        cleaned_users = 0
+        for u in all_users:
+            try:
+                await safe_call(lambda: context.bot.send_poll(chat_id=u["user_id"], question=question, options=options, is_anonymous=True))
+                success += 1
+                await asyncio.sleep(0.04)
+            except (Forbidden, BadRequest) as e:
+                users_collection.delete_one({"user_id": u["user_id"]})
+                cleaned_users += 1
+            except Exception as e:
+                logger.error(f"Poll send error for user {u['user_id']}: {e}")
+
+        clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
+        await update.message.reply_text(f"📊 Poll sent to {success}/{len(all_users)} Users!{clean_msg}")
+
+async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+
+    text = " ".join(context.args)
+    if "|" not in text:
+        await update.message.reply_text("⚠️ **Format:** `/quiz Question | Option1 | Option2 | CorrectOptionIndex(0,1..)`", parse_mode="Markdown")
+        return
+
+    parts = [p.strip() for p in text.split("|") if p.strip()]
+    if len(parts) < 4:
+        await update.message.reply_text("⚠️ Question, kam se kam 2 options, aur sahi option ka index (0, 1, 2...) dena zaroori hai!", parse_mode="Markdown")
+        return
+
+    question = parts[0]
+    options = parts[1:-1]
+    try:
+        correct_option_id = int(parts[-1])
+    except ValueError:
+        await update.message.reply_text("⚠️ Correct option index integer numeric hona chahiye (jaise: 0, 1, 2)!", parse_mode="Markdown")
+        return
+
+    current_mode = admin_modes.get(user.id, "channel")
+
+    if current_mode == "channel":
+        all_channels = list(channels_collection.find({}))
+        success = 0
+        for ch in all_channels:
+            try:
+                await safe_call(lambda: context.bot.send_poll(
+                    chat_id=ch["chat_id"], question=question, options=options,
+                    type="quiz", correct_option_id=correct_option_id, is_anonymous=True
+                ))
+                success += 1
+            except Exception as e:
+                logger.error(f"Quiz send failed for channel {ch['chat_id']}: {e}")
+        await update.message.reply_text(f"💡 Quiz broadcasted to {success}/{len(all_channels)} Channels!")
+    else:
+        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+        success = 0
+        cleaned_users = 0
+        for u in all_users:
+            try:
+                await safe_call(lambda: context.bot.send_poll(
+                    chat_id=u["user_id"], question=question, options=options,
+                    type="quiz", correct_option_id=correct_option_id, is_anonymous=True
+                ))
+                success += 1
+                await asyncio.sleep(0.04)
+            except (Forbidden, BadRequest) as e:
+                users_collection.delete_one({"user_id": u["user_id"]})
+                cleaned_users += 1
+            except Exception as e:
+                logger.error(f"Quiz send error for user {u['user_id']}: {e}")
+
+        clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
+        await update.message.reply_text(f"💡 Quiz sent to {success}/{len(all_users)} Users!{clean_msg}")
+
+# ------------------------------------------------------------------
 # Delete Command (/del)
 # ------------------------------------------------------------------
 async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,7 +475,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("⚠️ Kisi channel me bot Admin nahi hai!")
             return
 
-        # Check if this message is replying to a previously broadcasted message in channels
         reply_mapping = None
         if message.reply_to_message:
             replied_admin_msg_id = message.reply_to_message.message_id
@@ -369,69 +484,4 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         async def send_to_ch(ch):
             chat_id = ch["chat_id"]
-            reply_msg_id = reply_mapping.get(str(chat_id)) if reply_mapping else None
-            try:
-                sent = await send_clean_with_entities(
-                    context.bot, 
-                    chat_id, 
-                    message, 
-                    reply_to_channel_msg_id=reply_msg_id
-                )
-                return str(chat_id), sent.message_id
-            except Exception:
-                return str(chat_id), None
-
-        results = await asyncio.gather(*(send_to_ch(ch) for ch in all_channels))
-        mapping = {cid: mid for cid, mid in results if mid}
-        if mapping:
-            mappings_collection.update_one({"admin_msg_id": message.message_id}, {"$set": {"channels": mapping}}, upsert=True)
-        
-        if reply_mapping:
-            await message.reply_text(f"✅ Reply Broadcasted to {len(mapping)} Channels!")
-        else:
-            await message.reply_text(f"📢 Broadcasted to {len(mapping)} Channels!")
-
-    # C. Mode 2: User Broadcast Mode (All Users)
-    elif current_mode == "user":
-        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
-        if not all_users:
-            await message.reply_text("⚠️ Database me koi users nahi hain! Jab naye users bot par /start karenge tab unhe message jayega.")
-            return
-
-        success = 0
-        for u in all_users:
-            try:
-                await send_clean_with_entities(context.bot, u["user_id"], message)
-                success += 1
-                await asyncio.sleep(0.04)
-            except Exception as e:
-                logger.error(f"Failed to send to user {u['user_id']}: {e}")
-
-        await message.reply_text(f"👥 Sent to {success}/{len(all_users)} Users!")
-
-# ------------------------------------------------------------------
-# Entry point
-# ------------------------------------------------------------------
-async def post_init(application):
-    await check_premium_capability(application.bot)
-
-def main():
-    keep_alive()
-    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
-
-    application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("prediction", set_prediction_mode))
-    application.add_handler(CommandHandler("broadcast", set_broadcast_mode))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("del", delete_broadcast))
-    
-    application.add_handler(
-        MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_all_messages)
-    )
-
-    logger.info("Bot is active and running...")
-    application.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
+   
