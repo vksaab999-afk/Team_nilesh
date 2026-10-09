@@ -236,7 +236,7 @@ async def set_prediction_mode(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     admin_modes[user.id] = "channel"
     await update.message.reply_text(
-        "📢 **Prediction Mode Active!**\n\nAb aap jo bhi message bhejenge, woh sabhi **Channels** me instant broadcast hoga.",
+        "📢 **Prediction Mode Active!**\n\nAb aap jo bhi message bhejenge, woh sirf **Channels** me instant broadcast hoga.",
         parse_mode="Markdown"
     )
 
@@ -246,7 +246,7 @@ async def set_broadcast_mode(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     admin_modes[user.id] = "user"
     await update.message.reply_text(
-        "👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message bhejenge, woh Bot ke sabhi **Users** ko private chat me jayega.",
+        "👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.",
         parse_mode="Markdown"
     )
 
@@ -354,7 +354,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif current_mode == "user":
         all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
         if not all_users:
-            await message.reply_text("⚠️ Database me koi users nahi hain!")
+            await message.reply_text("⚠️ Database me koi users nahi hain! Jab naye users bot par /start karenge tab unhe message jayega.")
             return
 
         success = 0
@@ -363,8 +363,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await send_clean_with_entities(context.bot, u["user_id"], message)
                 success += 1
                 await asyncio.sleep(0.04)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to send to user {u['user_id']}: {e}")
+
         await message.reply_text(f"👥 Sent to {success}/{len(all_users)} Users!")
 
 # ------------------------------------------------------------------
