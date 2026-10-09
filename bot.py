@@ -85,7 +85,7 @@ except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
-# STYLED BUTTON HELPER (Safe & Bulletproof)
+# STYLED BUTTON HELPER
 # ------------------------------------------------------------------
 def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, callback_data=None):
     action = {"url": url} if url else {"callback_data": callback_data or "noop"}
@@ -270,19 +270,23 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
 
     if message.poll:
         async def _send():
-            return await bot.send_poll(
-                chat_id=chat_id,
-                question=message.poll.question,
-                options=[opt.text for opt in message.poll.options],
-                is_anonymous=message.poll.is_anonymous,
-                type=message.poll.type,
-                allows_multiple_answers=message.poll.allows_multiple_answers,
-                correct_option_id=message.poll.correct_option_id,
-                explanation=message.poll.explanation,
-                explanation_entities=sanitize_entities(message.poll.explanation_entities),
-                reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id,
-            )
+            poll_kwargs = {
+                "chat_id": chat_id,
+                "question": message.poll.question,
+                "options": [opt.text for opt in message.poll.options],
+                "is_anonymous": message.poll.is_anonymous,
+                "type": message.poll.type,
+                "allows_multiple_answers": message.poll.allows_multiple_answers,
+                "correct_option_id": message.poll.correct_option_id,
+                "explanation": message.poll.explanation,
+                "explanation_entities": sanitize_entities(message.poll.explanation_entities),
+            }
+            if reply_to_channel_msg_id:
+                poll_kwargs["reply_to_message_id"] = reply_to_channel_msg_id
+            if message_thread_id:
+                poll_kwargs["message_thread_id"] = message_thread_id
+                
+            return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send)
 
     if message.text:
@@ -530,7 +534,7 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 # ------------------------------------------------------------------
-# Poll & Quiz Helper Command Commands
+# Poll & Quiz Helper Command
 # ------------------------------------------------------------------
 async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -814,7 +818,7 @@ def main():
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
     app_bot.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    # Core Event Handlers (With POLL filter enabled)
+    # Core Event Handlers
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
