@@ -93,21 +93,55 @@ def get_welcome_settings():
             "_id": "welcome_config",
             "text": "👋 Welcome **{name}** to our Official Channel!\n\nPlease click the button below to verify yourself and start getting updates.",
             "video_id": None,
+            "video_caption": None,
+            "video_entities": None,
             "apk_id": None,
+            "apk_caption": None,
+            "apk_entities": None,
             "audio_id": None,
-            "button_text": "✅ Verify & Continue",
+            "audio_caption": None,
+            "audio_entities": None,
+            "button_text": "🔴 CLICK HERE TO GET DIRECT HACK 🔴",
             "button_url": None,
         }
         settings_collection.insert_one(default_settings)
         return default_settings
     return doc
 
-def update_welcome_setting(key, value):
+def update_welcome_setting(key_dict):
     settings_collection.update_one(
         {"_id": "welcome_config"},
-        {"$set": {key: value}},
+        {"$set": key_dict},
         upsert=True
     )
+
+def serialize_entities(entities):
+    if not entities:
+        return None
+    res = []
+    for e in entities:
+        res.append({
+            "type": e.type,
+            "offset": e.offset,
+            "length": e.length,
+            "url": e.url,
+            "custom_emoji_id": e.custom_emoji_id
+        })
+    return res
+
+def deserialize_entities(raw_entities):
+    if not raw_entities:
+        return None
+    res = []
+    for e in raw_entities:
+        res.append(MessageEntity(
+            type=e["type"],
+            offset=e["offset"],
+            length=e["length"],
+            url=e.get("url"),
+            custom_emoji_id=e.get("custom_emoji_id")
+        ))
+    return res
 
 # ------------------------------------------------------------------
 # Entity sanitization & Safe Call
@@ -258,42 +292,75 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Welcome Join Request Handler
+# Join Request Handler (Exact Captions + Premium Emojis + Custom Buttons)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
     user = request.from_user
     settings = get_welcome_settings()
 
-    raw_text = settings.get("text", "Welcome **{name}**!")
     user_first_name = user.first_name or "User"
-    formatted_text = raw_text.replace("{name}", f"**{user_first_name}**")
 
-    button_text = settings.get("button_text", "✅ Verify Now")
+    button_text = settings.get("button_text", "🔴 CLICK HERE TO GET DIRECT HACK 🔴")
     if settings.get("button_url"):
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(button_text, url=settings["button_url"])]])
     else:
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(button_text, callback_data="verify_user")]])
 
     try:
+        # 1. Send Video with Exact Caption + Premium Emojis
         if settings.get("video_id"):
-            await context.bot.send_video(chat_id=user.id, video=settings["video_id"])
+            vid_cap = settings.get("video_caption") or ""
+            vid_cap = vid_cap.replace("{name}", f"**{user_first_name}**")
+            vid_entities = deserialize_entities(settings.get("video_entities"))
+            await context.bot.send_video(
+                chat_id=user.id,
+                video=settings["video_id"],
+                caption=vid_cap if vid_cap else None,
+                caption_entities=vid_entities,
+                reply_markup=reply_markup if not (settings.get("apk_id") or settings.get("audio_id") or settings.get("text")) else None
+            )
 
+        # 2. Send APK / Document with Exact Caption + Premium Emojis
         if settings.get("apk_id"):
-            await context.bot.send_document(chat_id=user.id, document=settings["apk_id"])
+            apk_cap = settings.get("apk_caption") or ""
+            apk_cap = apk_cap.replace("{name}", f"**{user_first_name}**")
+            apk_entities = deserialize_entities(settings.get("apk_entities"))
+            await context.bot.send_document(
+                chat_id=user.id,
+                document=settings["apk_id"],
+                caption=apk_cap if apk_cap else None,
+                caption_entities=apk_entities,
+                reply_markup=reply_markup if not (settings.get("audio_id") or settings.get("text")) else None
+            )
 
+        # 3. Send Audio with Exact Caption + Premium Emojis
         if settings.get("audio_id"):
-            await context.bot.send_audio(chat_id=user.id, audio=settings["audio_id"])
+            aud_cap = settings.get("audio_caption") or ""
+            aud_cap = aud_cap.replace("{name}", f"**{user_first_name}**")
+            aud_entities = deserialize_entities(settings.get("audio_entities"))
+            await context.bot.send_audio(
+                chat_id=user.id,
+                audio=settings["audio_id"],
+                caption=aud_cap if aud_cap else None,
+                caption_entities=aud_entities,
+                reply_markup=reply_markup if not settings.get("text") else None
+            )
 
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=formatted_text,
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-        logger.info(f"✅ Welcome multi-media package delivered to {user.first_name} ({user.id})")
+        # 4. Text Message (If standalone text exists)
+        if settings.get("text"):
+            raw_text = settings.get("text")
+            formatted_text = raw_text.replace("{name}", f"**{user_first_name}**")
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=formatted_text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+
+        logger.info(f"✅ Full media package with exact captions sent to {user.first_name} ({user.id})")
     except Exception as e:
-        logger.error(f"❌ Failed to deliver welcome package to {user.id}: {e}")
+        logger.error(f"❌ Failed to send join request package to {user.id}: {e}")
 
 # ------------------------------------------------------------------
 # Callback Query Handler
@@ -319,12 +386,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         admin_states[user.id] = f"awaiting_{setting_type}"
         
         labels = {
-            "text": "📝 Naya Welcome Text bhejey (Use `{name}` for Bold Name):",
-            "video": "🎥 Nayi Video file bhejey:",
-            "apk": "📁 Nayi APK / Document file bhejey:",
-            "audio": "🎵 Nayi Audio file bhejey:",
-            "btn_text": "🔘 Naya Button Name bhejey (e.g. 🚀 Click To Verify):",
-            "btn_url": "🔗 Button URL link bhejey (Ya 'none' likhein for Callback Verification):"
+            "text": "📝 Naya Standalone Welcome Text bhejey (Use `{name}` for Bold Name):",
+            "video": "🎥 Nayi Video file bhejey (With Caption & Emojis):",
+            "apk": "📁 Nayi APK / Document file bhejey (With Caption & Emojis):",
+            "audio": "🎵 Nayi Audio file bhejey (With Caption & Emojis):",
+            "btn_text": "🔘 Button Name bhejey (e.g. 🔴 CLICK HERE TO GET DIRECT HACK 🔴):",
+            "btn_url": "🔗 Button URL link bhejey (Ya 'none' write karein for Verification Callback):"
         }
         await query.edit_message_text(labels.get(setting_type, "Send input:"))
 
@@ -340,10 +407,10 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
     
     status_text = (
         "⚙️ **UPDATE JOIN REQUEST WELCOME PANEL**\n\n"
-        f"📝 **Current Text Template:**\n`{settings.get('text')}`\n\n"
-        f"🎥 **Tutorial Video Attached:** `{'Yes' if settings.get('video_id') else 'No'}`\n"
-        f"📁 **APK/File Attached:** `{'Yes' if settings.get('apk_id') else 'No'}`\n"
-        f"🎵 **Audio Attached:** `{'Yes' if settings.get('audio_id') else 'No'}`\n"
+        f"📝 **Text Configured:** `{'Yes' if settings.get('text') else 'No'}`\n"
+        f"🎥 **Video Configured:** `{'Yes (Caption Saved)' if settings.get('video_id') else 'No'}`\n"
+        f"📁 **APK Configured:** `{'Yes (Caption Saved)' if settings.get('apk_id') else 'No'}`\n"
+        f"🎵 **Audio Configured:** `{'Yes (Caption Saved)' if settings.get('audio_id') else 'No'}`\n"
         f"🔘 **Button Label:** `{settings.get('button_text')}`\n"
         f"🔗 **Button Action:** `{settings.get('button_url') or 'Database Verification Mode'}`\n\n"
         "👇 Niche buttons par click karke change karein:"
@@ -417,7 +484,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     replied_msg_id = message.reply_to_message.message_id
-    mapping = mappings_collection.find_one({"admin_msg_id": replied_msg_id})
+    mapping = mappings_collection.find_one({"admin_msg_id":Replied_msg_id}) if (Replied_msg_id := replied_msg_id) else None
 
     if not mapping:
         await message.reply_text("⚠️ Yeh message kisi broadcast record mein nahi mila.")
@@ -449,33 +516,53 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
-    # Admin Settings Dynamic Inputs
+    # Admin Settings Dynamic Inputs (Capturing File + Captions + Entities)
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
         state = admin_states.pop(user.id)
         if state == "awaiting_text" and message.text:
-            update_welcome_setting("text", message.text)
-            await message.reply_text("✅ Welcome Text update ho gaya hai!")
+            update_welcome_setting({"text": message.text})
+            await message.reply_text("✅ Standalone Welcome Text update ho gaya hai!")
             return
+
         elif state == "awaiting_video" and message.video:
-            update_welcome_setting("video_id", message.video.file_id)
-            await message.reply_text("✅ Tutorial Video update ho gayi hai!")
+            entities_data = serialize_entities(message.caption_entities)
+            update_welcome_setting({
+                "video_id": message.video.file_id,
+                "video_caption": message.caption,
+                "video_entities": entities_data
+            })
+            await message.reply_text("✅ Video with exact Caption & Premium Emojis update ho gayi hai!")
             return
+
         elif state == "awaiting_apk" and message.document:
-            update_welcome_setting("apk_id", message.document.file_id)
-            await message.reply_text("✅ APK / Document file update ho gayi hai!")
+            entities_data = serialize_entities(message.caption_entities)
+            update_welcome_setting({
+                "apk_id": message.document.file_id,
+                "apk_caption": message.caption,
+                "apk_entities": entities_data
+            })
+            await message.reply_text("✅ APK File with exact Caption & Premium Emojis update ho gayi hai!")
             return
+
         elif state == "awaiting_audio" and (message.audio or message.voice):
             file_id = message.audio.file_id if message.audio else message.voice.file_id
-            update_welcome_setting("audio_id", file_id)
-            await message.reply_text("✅ Audio file update ho gayi hai!")
+            entities_data = serialize_entities(message.caption_entities)
+            update_welcome_setting({
+                "audio_id": file_id,
+                "audio_caption": message.caption,
+                "audio_entities": entities_data
+            })
+            await message.reply_text("✅ Audio with exact Caption & Premium Emojis update ho gayi hai!")
             return
+
         elif state == "awaiting_btn_text" and message.text:
-            update_welcome_setting("button_text", message.text)
+            update_welcome_setting({"button_text": message.text})
             await message.reply_text("✅ Button Text update ho gaya hai!")
             return
+
         elif state == "awaiting_btn_url" and message.text:
             url_val = None if message.text.lower() == "none" else message.text
-            update_welcome_setting("button_url", url_val)
+            update_welcome_setting({"button_url": url_val})
             await message.reply_text("✅ Button Link update ho gaya hai!")
             return
 
@@ -595,10 +682,8 @@ def main():
         logger.error("BOT_TOKEN missing. System exiting...")
         return
 
-    # Start Flask server
     keep_alive()
 
-    # Build Application
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
     # Commands
@@ -617,9 +702,8 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages))
 
-    logger.info("🤖 VIP Join Request & Audio Broadcast Bot is running...")
+    logger.info("🤖 VIP Premium Media Join Request Broadcast Bot is running...")
     
-    # Clean run_polling without conflicting event loops
     app_bot.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
