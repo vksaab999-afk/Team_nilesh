@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import asyncio
 from threading import Thread
 
@@ -84,6 +85,31 @@ except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
+# STYLED BUTTON HELPER (Exact Same Logic From Working Bot)
+# ------------------------------------------------------------------
+def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, callback_data=None):
+    action = {"url": url} if url else {"callback_data": callback_data or "noop"}
+    modern = {"text": text, **action}
+    
+    if style:
+        modern["style"] = style
+    if icon_custom_emoji_id:
+        modern["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
+
+    try:
+        return InlineKeyboardButton(**modern)
+    except TypeError:
+        api_kwargs = {}
+        if style:
+            api_kwargs["style"] = style
+        if icon_custom_emoji_id:
+            api_kwargs["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
+        try:
+            return InlineKeyboardButton(text=text, api_kwargs=api_kwargs, **action)
+        except TypeError:
+            return InlineKeyboardButton(text=text, **action)
+
+# ------------------------------------------------------------------
 # Settings Helper Functions
 # ------------------------------------------------------------------
 def get_welcome_settings():
@@ -151,8 +177,13 @@ def build_inline_keyboard(buttons_list):
     for btn in buttons_list:
         text = btn.get("text", "Button")
         url = btn.get("url")
+        style = btn.get("style")
+        icon_id = btn.get("icon_id")
+        
         if url:
-            keyboard.append([InlineKeyboardButton(text, url=url)])
+            btn_obj = styled_button(text=text, url=url, style=style, icon_custom_emoji_id=icon_id)
+            keyboard.append([btn_obj])
+            
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 def parse_buttons_text(raw_text):
@@ -164,8 +195,9 @@ def parse_buttons_text(raw_text):
         line = line.strip()
         if not line:
             continue
-        if line.lower().startswith("target:"):
-            target_val = line.split(":", 1)[1].strip().lower()
+        
+        if line.lower().startswith("target:") or line.lower() in ["video", "apk", "audio"]:
+            target_val = line.split(":", 1)[1].strip().lower() if ":" in line else line.lower()
             if "video" in target_val:
                 target = "video"
             elif "apk" in target_val or "doc" in target_val:
@@ -174,18 +206,38 @@ def parse_buttons_text(raw_text):
                 target = "audio"
             elif "text" in target_val:
                 target = "text"
-        elif ":" in line and ("http://" in line or "https://" in line or "t.me" in line):
-            parts = line.split(":", 1)[1].strip().split("-", 1)
-            if len(parts) == 2:
-                btn_label = parts[0].strip()
-                btn_link = parts[1].strip()
-                buttons.append({"text": btn_label, "url": btn_link})
-            else:
-                subparts = line.rsplit("http", 1)
-                if len(subparts) == 2:
-                    label_part = subparts[0].split(":", 1)[-1].strip(" -:")
-                    link_part = "http" + subparts[1].strip()
-                    buttons.append({"text": label_part, "url": link_part})
+            continue
+
+        if "http://" in line or "https://" in line or "t.me" in line:
+            # Check for style and icon parameters
+            style_val = None
+            icon_val = None
+            
+            if "| style:" in line.lower():
+                parts_s = re.split(r'\|\s*style:', line, flags=re.IGNORECASE)
+                style_val = parts_s[1].strip().split()[0].strip()
+                line = parts_s[0].strip()
+
+            if "| icon:" in line.lower():
+                parts_i = re.split(r'\|\s*icon:', line, flags=re.IGNORECASE)
+                icon_val = parts_i[1].strip().split()[0].strip(" []")
+                line = parts_i[0].strip()
+
+            # Clean prefixes
+            cleaned_line = re.sub(r'button\s*\d+\s*:', '', line, flags=re.IGNORECASE).strip()
+
+            subparts = cleaned_line.rsplit("http", 1)
+            if len(subparts) == 2:
+                label_part = subparts[0].strip(" -:")
+                link_part = "http" + subparts[1].strip()
+                if label_part and link_part:
+                    buttons.append({
+                        "text": label_part,
+                        "url": link_part,
+                        "style": style_val,
+                        "icon_id": icon_val
+                    })
+
     return buttons, target
 
 # ------------------------------------------------------------------
@@ -337,7 +389,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (Direct Media & Pure Link Buttons Only)
+# Join Request Handler (Styled Custom Buttons Enabled)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -346,7 +398,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     user_first_name = user.first_name or "User"
 
-    # Auto-save user to database on join request trigger
     users_collection.update_one(
         {"user_id": user.id},
         {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
@@ -410,7 +461,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode="Markdown"
             )
 
-        logger.info(f"✅ Pure media package delivered to {user.first_name} ({user.id})")
+        logger.info(f"✅ Styled button media package delivered to {user.first_name} ({user.id})")
     except Exception as e:
         logger.error(f"❌ Failed to send join request package to {user.id}: {e}")
 
@@ -425,13 +476,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if query.data == "set_custom_buttons":
         admin_states[user.id] = "awaiting_custom_buttons"
         instr = (
-            "🔘 **ADD COLORFUL & CUSTOM BUTTONS ENGINE**\n\n"
-            "Format mein message bhejey (Use 🔴 for Danger, 🟢 for Success, 🔵 for Primary):\n\n"
-            "`Button 1: 🔴 DM FOR LOSS RECOVERY - https://t.me/yourusername`\n"
-            "`Button 2: 🟢 REGISTRATION LINK - https://t.me/reglink`\n"
-            "`Button 3: 🔵 VIP CHANNEL - https://t.me/vipchannel`\n"
+            "🔘 **ADD STYLED & EMOJI ICON BUTTONS**\n\n"
+            "Format mein message bhejey:\n\n"
+            "`Button 1: 🔴 DM FOR LOSS RECOVERY - https://t.me/yourusername | icon: 6111716252932119427 | style: danger`\n"
+            "`Button 2: 🟢 REGISTRATION LINK - https://bdg4.cc/#/register | icon: 5271604874419647061 | style: success`\n"
+            "`Button 3: 🔵 VIP CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon: 5001508545976337554 | style: primary`\n"
             "`Target: Video`\n\n"
-            "*(Target options: `Video`, `APK`, ya `Audio`)*"
+            "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
         )
         await query.edit_message_text(instr, parse_mode="Markdown")
 
@@ -473,7 +524,7 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
     keyboard = [
         [InlineKeyboardButton("🎥 Change Video", callback_data="set_video"), InlineKeyboardButton("📁 Change APK", callback_data="set_apk")],
         [InlineKeyboardButton("🎵 Change Audio", callback_data="set_audio"), InlineKeyboardButton("📝 Change Text", callback_data="set_text")],
-        [InlineKeyboardButton("🔘 Add/Set Colorful Buttons", callback_data="set_custom_buttons")],
+        [InlineKeyboardButton("🔘 Add/Set Colorful Styled Buttons", callback_data="set_custom_buttons")],
     ]
 
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -570,7 +621,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
-    # Admin Settings Inputs (Multi-Button Parser Engine Included)
+    # Admin Settings Inputs
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
         state = admin_states.pop(user.id)
         
@@ -579,7 +630,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if parsed_btns:
                 db_key = f"{target_media}_buttons"
                 update_welcome_setting({db_key: parsed_btns})
-                await message.reply_text(f"✅ `{len(parsed_btns)}` Buttons successfully set for **{target_media.upper()}** message!", parse_mode="Markdown")
+                await message.reply_text(f"✅ `{len(parsed_btns)}` Styled Buttons successfully set for **{target_media.upper()}** message!", parse_mode="Markdown")
             else:
                 await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
             return
@@ -596,7 +647,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "video_caption": message.caption,
                 "video_entities": entities_data
             })
-            await message.reply_text("✅ Video with exact Caption & Premium Emojis update ho gayi hai!")
+            await message.reply_text("✅ Video with exact Caption & Emojis update ho gayi hai!")
             return
 
         elif state == "awaiting_apk" and message.document:
@@ -606,7 +657,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "apk_caption": message.caption,
                 "apk_entities": entities_data
             })
-            await message.reply_text("✅ APK File with exact Caption & Premium Emojis update ho gayi hai!")
+            await message.reply_text("✅ APK File with exact Caption & Emojis update ho gayi hai!")
             return
 
         elif state == "awaiting_audio" and (message.audio or message.voice):
@@ -617,7 +668,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "audio_caption": message.caption,
                 "audio_entities": entities_data
             })
-            await message.reply_text("✅ Audio with exact Caption & Premium Emojis update ho gayi hai!")
+            await message.reply_text("✅ Audio with exact Caption & Emojis update ho gayi hai!")
             return
 
     # 1. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
@@ -756,7 +807,7 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages))
 
-    logger.info("🤖 VIP Join Request Broadcast Bot is running...")
+    logger.info("🤖 VIP Styled Button Broadcast Bot is running...")
     
     app_bot.run_polling(drop_pending_updates=True)
 
