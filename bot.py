@@ -486,4 +486,75 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             reply_msg_id = reply_mapping.get(str(chat_id)) if reply_mapping else None
             try:
                 sent = await send_clean_with_entities(
-                    con
+                    context.bot, 
+                    chat_id, 
+                    message, 
+                    reply_to_channel_msg_id=reply_msg_id
+                )
+                return str(chat_id), sent.message_id
+            except (Forbidden, BadRequest):
+                channels_collection.delete_one({"chat_id": chat_id})
+                return str(chat_id), None
+            except Exception:
+                return str(chat_id), None
+
+        results = await asyncio.gather(*(send_to_ch(ch) for ch in all_channels))
+        mapping = {cid: mid for cid, mid in results if mid}
+        if mapping:
+            mappings_collection.update_one({"admin_msg_id": message.message_id}, {"$set": {"channels": mapping}}, upsert=True)
+        
+        if reply_mapping:
+            await message.reply_text(f"✅ Reply Broadcasted to {len(mapping)} Channels!")
+        else:
+            await message.reply_text(f"📢 Broadcasted to {len(mapping)} Channels!")
+
+    elif current_mode == "user":
+        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+        if not all_users:
+            await message.reply_text("⚠️ Database me koi users nahi hain!")
+            return
+
+        success = 0
+        cleaned_users = 0
+        for u in all_users:
+            try:
+                await send_clean_with_entities(context.bot, u["user_id"], message)
+                success += 1
+                await asyncio.sleep(0.04)
+            except (Forbidden, BadRequest):
+                users_collection.delete_one({"user_id": u["user_id"]})
+                cleaned_users += 1
+            except Exception as e:
+                logger.error(f"Failed to send to user {u['user_id']}: {e}")
+
+        clean_msg = f"\n🗑️ **Auto-Cleaned:** `{cleaned_users}` inactive users." if cleaned_users > 0 else ""
+        await update.message.reply_text(f"👥 Sent to {success}/{len(all_users)} Users!{clean_msg}", parse_mode="Markdown")
+
+# ------------------------------------------------------------------
+# Entry point
+# ------------------------------------------------------------------
+async def post_init(application):
+    await check_premium_capability(application.bot)
+
+def main():
+    keep_alive()
+    application = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+
+    application.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("prediction", set_prediction_mode))
+    application.add_handler(CommandHandler("broadcast", set_broadcast_mode))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("poll", poll_command))
+    application.add_handler(CommandHandler("quiz", quiz_command))
+    application.add_handler(CommandHandler("del", delete_broadcast))
+    
+    application.add_handler(
+        MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, handle_all_messages)
+    )
+
+    logger.info("Bot is active and running...")
+    application.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
