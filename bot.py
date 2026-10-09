@@ -66,7 +66,8 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 def keep_alive():
-    Thread(target=run_flask, daemon=True).start()
+    t = Thread(target=run_flask, daemon=True)
+    t.start()
 
 # ------------------------------------------------------------------
 # Mongo Setup
@@ -257,19 +258,17 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Welcome Join Request Handler (Video + APK + Audio + Bold Name Text)
+# Welcome Join Request Handler
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
     user = request.from_user
     settings = get_welcome_settings()
 
-    # User ka First Name Bold formatting ke saath replace karna
     raw_text = settings.get("text", "Welcome **{name}**!")
     user_first_name = user.first_name or "User"
     formatted_text = raw_text.replace("{name}", f"**{user_first_name}**")
 
-    # Dynamic Verification / External Link Button
     button_text = settings.get("button_text", "✅ Verify Now")
     if settings.get("button_url"):
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(button_text, url=settings["button_url"])]])
@@ -277,19 +276,15 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton(button_text, callback_data="verify_user")]])
 
     try:
-        # 1. Video Dispatch
         if settings.get("video_id"):
             await context.bot.send_video(chat_id=user.id, video=settings["video_id"])
 
-        # 2. APK / Document File Dispatch
         if settings.get("apk_id"):
             await context.bot.send_document(chat_id=user.id, document=settings["apk_id"])
 
-        # 3. Audio File Dispatch
         if settings.get("audio_id"):
             await context.bot.send_audio(chat_id=user.id, audio=settings["audio_id"])
 
-        # 4. Final Welcome Text Dispatch with Button
         await context.bot.send_message(
             chat_id=user.id,
             text=formatted_text,
@@ -477,4 +472,10 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif state == "awaiting_btn_text" and message.text:
             update_welcome_setting("button_text", message.text)
             await message.reply_text("✅ Button Text update ho gaya hai!")
-          
+            return
+        elif state == "awaiting_btn_url" and message.text:
+            url_val = None if message.text.lower() == "none" else message.text
+            update_welcome_setting("button_url", url_val)
+            await message.reply_text("✅ Button Link update ho gaya hai!")
+            return
+
