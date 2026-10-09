@@ -479,3 +479,148 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("✅ Button Link update ho gaya hai!")
             return
 
+    # 1. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
+    if chat.id == ADMIN_GROUP_ID:
+        thread_id = message.message_thread_id
+        if not thread_id:
+            return
+
+        doc = user_topics_collection.find_one({"thread_id": thread_id})
+        if doc and "user_id" in doc:
+            target_user_id = doc["user_id"]
+            try:
+                await send_clean_with_entities(context.bot, target_user_id, message)
+            except Exception as e:
+                logger.error(f"Error replying to user {target_user_id} from Forum: {e}")
+        return
+
+    # 2. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC
+    if user.id not in ADMIN_USER_IDS:
+        users_collection.update_one(
+            {"user_id": user.id},
+            {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
+            upsert=True,
+        )
+
+        if ADMIN_GROUP_ID != 0:
+            thread_id = await get_or_create_user_topic(context.bot, user)
+            if thread_id:
+                try:
+                    await send_clean_with_entities(
+                        context.bot, chat_id=ADMIN_GROUP_ID, message=message, message_thread_id=thread_id
+                    )
+                    return
+                except Exception as e:
+                    logger.error(f"❌ Could not forward msg to thread {thread_id}: {e}")
+
+        username_str = f"@{user.username}" if user.username else "No Username"
+        caption_info = f"📩 **New Message From User:**\n👤 **Name:** {user.first_name}\n🔗 **Username:** {username_str}\n🆔 **User ID:** `{user.id}`\n\n"
+
+        for admin_id in ADMIN_USER_IDS:
+            try:
+                if message.text:
+                    await context.bot.send_message(chat_id=admin_id, text=caption_info + message.text, parse_mode="Markdown")
+                else:
+                    copied_msg = await context.bot.copy_message(chat_id=admin_id, from_chat_id=message.chat_id, message_id=message.message_id)
+                    await context.bot.send_message(chat_id=admin_id, text=caption_info, reply_to_message_id=copied_msg.message_id, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Error forwarding user msg to admin: {e}")
+        return
+
+    # 3. ADMIN DIRECT DM MESSAGES -> CHANNELS / BROADCAST MODE
+    current_mode = admin_modes.get(user.id, "channel")
+
+    if current_mode == "channel":
+        all_channels = list(channels_collection.find({}))
+        if not all_channels:
+            await message.reply_text("⚠️ Kisi channel me bot Admin nahi hai!")
+            return
+
+        reply_mapping = None
+        if message.reply_to_message:
+            replied_admin_msg_id = message.reply_to_message.message_id
+            mapping_doc = mappings_collection.find_one({"admin_msg_id": replied_admin_msg_id})
+            if mapping_doc:
+                reply_mapping = mapping_doc.get("channels", {})
+
+        sent_channels = {}
+        success = 0
+
+        for ch in all_channels:
+            ch_id = ch["chat_id"]
+            reply_to_msg_id = reply_mapping.get(str(ch_id)) if reply_mapping else None
+            try:
+                sent_msg = await send_clean_with_entities(
+                    context.bot, ch_id, message, reply_to_channel_msg_id=reply_to_msg_id
+                )
+                if sent_msg:
+                    sent_channels[str(ch_id)] = sent_msg.message_id
+                    success += 1
+            except Exception as e:
+                logger.error(f"Failed to post in channel {ch_id}: {e}")
+
+        if sent_channels:
+            mappings_collection.insert_one({
+                "admin_msg_id": message.message_id,
+                "channels": sent_channels
+            })
+
+        await message.reply_text(f"📢 Broadcast sent to {success}/{len(all_channels)} Channels!")
+
+    else:
+        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+        success = 0
+        cleaned_users = 0
+
+        for u in all_users:
+            u_id = u["user_id"]
+            try:
+                await send_clean_with_entities(context.bot, u_id, message)
+                success += 1
+                await asyncio.sleep(0.04)
+            except (Forbidden, BadRequest):
+                users_collection.delete_one({"user_id": u_id})
+                cleaned_users += 1
+            except Exception as e:
+                logger.error(f"User broadcast failed for {u_id}: {e}")
+
+        clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
+        await update.message.reply_text(f"👥 Broadcast sent to {success}/{len(all_users)} Users!{clean_msg}")
+
+# ------------------------------------------------------------------
+# Main Entry Point
+# ------------------------------------------------------------------
+def main():
+    if not TOKEN:
+        logger.error("BOT_TOKEN missing. System exiting...")
+        return
+
+    # Start Flask server
+    keep_alive()
+
+    # Build Application
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+
+    # Commands
+    app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("prediction", set_prediction_mode))
+    app_bot.add_handler(CommandHandler("broadcast", set_broadcast_mode))
+    app_bot.add_handler(CommandHandler("stats", stats_command))
+    app_bot.add_handler(CommandHandler("del", delete_broadcast))
+    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
+
+    # Handlers for Join Request & Callbacks
+    app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
+    app_bot.add_handler(CallbackQueryHandler(handle_callback_query))
+
+    # Core Event Handlers
+    app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages))
+
+    logger.info("🤖 VIP Join Request & Audio Broadcast Bot is running...")
+    
+    # Clean run_polling without conflicting event loops
+    app_bot.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
