@@ -26,10 +26,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
-# Config
+# Safe Config (Prevents KeyError crashing Render)
 # ------------------------------------------------------------------
-TOKEN = os.environ["BOT_TOKEN"]
-MONGO_URI = os.environ["MONGO_URI"]
+TOKEN = os.environ.get("BOT_TOKEN", "")
+MONGO_URI = os.environ.get("MONGO_URI", "")
+
+if not TOKEN or not MONGO_URI:
+    logger.error("❌ BOT_TOKEN ya MONGO_URI missing hai Environment Variables me!")
 
 # Admin User IDs List
 ADMIN_USER_IDS = [5785924075]
@@ -56,11 +59,14 @@ def keep_alive():
 # ------------------------------------------------------------------
 # Mongo Setup
 # ------------------------------------------------------------------
-client = MongoClient(MONGO_URI)
-db = client["telegram_broadcast_bot"]
-channels_collection = db["active_channels"]
-mappings_collection = db["broadcast_mappings"]
-users_collection = db["bot_users"]
+try:
+    client = MongoClient(MONGO_URI)
+    db = client["telegram_broadcast_bot"]
+    channels_collection = db["active_channels"]
+    mappings_collection = db["broadcast_mappings"]
+    users_collection = db["bot_users"]
+except Exception as e:
+    logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
 # Premium-emoji capability check
@@ -117,14 +123,13 @@ def sanitize_entities(entities):
     cleaned = [e for e in entities if e.type in _ALLOWED_ENTITY_TYPES]
     return cleaned or None
 
-# Feature: Failed Broadcast Retrier (Safe Call with Backoff)
 async def safe_call(coro_factory, retries: int = 3):
     for attempt in range(retries):
         try:
             return await coro_factory()
         except RetryAfter as e:
             wait = int(e.retry_after) + 1
-            logger.warning(f"FloodWait encountered. Retrying in {wait}s... (Attempt {attempt+1}/{retries})")
+            logger.warning(f"FloodWait encountered. Retrying in {wait}s...")
             await asyncio.sleep(wait)
         except (Forbidden, BadRequest) as e:
             logger.error(f"Failed call permanently: {e}")
@@ -280,8 +285,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------------------------------------------------------------
 # Feature: Interactive Poll & Quiz Engine (/poll & /quiz)
-# Format: /poll Question | Opt1 | Opt2 | Opt3
-# Format: /quiz Question | Opt1 | Opt2 | CorrectIndex (0-based)
 # ------------------------------------------------------------------
 async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -321,7 +324,7 @@ async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_call(lambda: context.bot.send_poll(chat_id=u["user_id"], question=question, options=options, is_anonymous=True))
                 success += 1
                 await asyncio.sleep(0.04)
-            except (Forbidden, BadRequest) as e:
+            except (Forbidden, BadRequest):
                 users_collection.delete_one({"user_id": u["user_id"]})
                 cleaned_users += 1
             except Exception as e:
@@ -342,7 +345,7 @@ async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     parts = [p.strip() for p in text.split("|") if p.strip()]
     if len(parts) < 4:
-        await update.message.reply_text("⚠️ Question, kam se kam 2 options, aur sahi option ka index (0, 1, 2...) dena zaroori hai!", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Question, 2 options aur correct index required hai!", parse_mode="Markdown")
         return
 
     question = parts[0]
@@ -350,7 +353,7 @@ async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         correct_option_id = int(parts[-1])
     except ValueError:
-        await update.message.reply_text("⚠️ Correct option index integer numeric hona chahiye (jaise: 0, 1, 2)!", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Correct option index integer numeric hona chahiye!", parse_mode="Markdown")
         return
 
     current_mode = admin_modes.get(user.id, "channel")
@@ -380,7 +383,7 @@ async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ))
                 success += 1
                 await asyncio.sleep(0.04)
-            except (Forbidden, BadRequest) as e:
+            except (Forbidden, BadRequest):
                 users_collection.delete_one({"user_id": u["user_id"]})
                 cleaned_users += 1
             except Exception as e:
@@ -431,7 +434,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     message = update.message
 
-    # 1. USER SIDE LOGIC (Non-Admins)
     if user.id not in ADMIN_USER_IDS:
         users_collection.update_one(
             {"user_id": user.id},
@@ -452,8 +454,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error forwarding user msg to admin: {e}")
         return
 
-    # 2. ADMIN SIDE LOGIC
-    # A. Check if Admin is replying to a forwarded User Message
     if message.reply_to_message:
         replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
         if "🆔 User ID:" in replied_text:
@@ -468,7 +468,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     current_mode = admin_modes.get(user.id, "channel")
 
-    # B. Mode 1: Prediction Mode (Channel Broadcast)
     if current_mode == "channel":
         all_channels = list(channels_collection.find({}))
         if not all_channels:
@@ -484,4 +483,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         async def send_to_ch(ch):
             chat_id = ch["chat_id"]
-   
+            reply_msg_id = reply_mapping.get(str(chat_id)) if reply_mapping else None
+            try:
+                sent = await send_clean_with_entities(
+                    con
