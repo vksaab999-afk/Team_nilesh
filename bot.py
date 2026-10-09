@@ -268,6 +268,23 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
     text_entities = sanitize_entities(message.entities)
     caption_entities = sanitize_entities(message.caption_entities)
 
+    if message.poll:
+        async def _send():
+            return await bot.send_poll(
+                chat_id=chat_id,
+                question=message.poll.question,
+                options=[opt.text for opt in message.poll.options],
+                is_anonymous=message.poll.is_anonymous,
+                type=message.poll.type,
+                allows_multiple_answers=message.poll.allows_multiple_answers,
+                correct_option_id=message.poll.correct_option_id,
+                explanation=message.poll.explanation,
+                explanation_entities=sanitize_entities(message.poll.explanation_entities),
+                reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id,
+            )
+        return await safe_call(_send)
+
     if message.text:
         async def _send():
             return await bot.send_message(
@@ -378,7 +395,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (Pure Clean Video, APK, Audio Deliver)
+# Join Request Handler
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -511,6 +528,20 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
     ]
 
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ------------------------------------------------------------------
+# Poll & Quiz Helper Command Commands
+# ------------------------------------------------------------------
+async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+    await update.message.reply_text(
+        "📊 **Poll / Quiz Create Guide:**\n\n"
+        "Aap direct Telegram Chat me **Attachment Button (📎) -> Poll** par click karke koi bhi Poll ya Quiz create karein aur bot ko send kar dein.\n\n"
+        "Current mode ke according bot use channels ya users me instant broadcast kar dega!",
+        parse_mode="Markdown"
+    )
 
 # ------------------------------------------------------------------
 # Commands
@@ -776,14 +807,16 @@ def main():
     app_bot.add_handler(CommandHandler("stats", stats_command))
     app_bot.add_handler(CommandHandler("del", delete_broadcast))
     app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
+    app_bot.add_handler(CommandHandler("poll", poll_command))
+    app_bot.add_handler(CommandHandler("quiz", poll_command))
 
     # Handlers for Join Request & Callbacks
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
     app_bot.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    # Core Event Handlers
+    # Core Event Handlers (With POLL filter enabled)
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
-    app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages))
+    app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
     logger.info("🤖 VIP Clean Join Request Broadcast Bot is running...")
     
