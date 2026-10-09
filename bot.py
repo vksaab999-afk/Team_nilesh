@@ -92,9 +92,9 @@ def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, call
     api_kwargs = {}
     
     if style:
-        api_kwargs["style"] = style
+        api_kwargs["style"] = str(style).strip()
     if icon_custom_emoji_id:
-        api_kwargs["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
+        api_kwargs["icon_custom_emoji_id"] = str(icon_custom_emoji_id).strip()
 
     if api_kwargs:
         try:
@@ -206,13 +206,13 @@ def parse_buttons_text(raw_text):
             style_val = None
             icon_val = None
             
-            if "| style:" in line.lower():
-                parts_s = re.split(r'\|\s*style:', line, flags=re.IGNORECASE)
+            if "| style" in line.lower():
+                parts_s = re.split(r'\|\s*style\s*:', line, flags=re.IGNORECASE)
                 style_val = parts_s[1].strip().split()[0].strip()
                 line = parts_s[0].strip()
 
-            if "| icon:" in line.lower():
-                parts_i = re.split(r'\|\s*icon:', line, flags=re.IGNORECASE)
+            if "| icon" in line.lower():
+                parts_i = re.split(r'\|\s*icon\s*:', line, flags=re.IGNORECASE)
                 icon_val = parts_i[1].strip().split()[0].strip(" []")
                 line = parts_i[0].strip()
 
@@ -381,7 +381,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler
+# Join Request Handler (With Auto-Fallback & Robust Send)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -398,7 +398,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         upsert=True,
     )
 
-    # 1. Video
+    # 1. Video Package
     if settings.get("video_id"):
         try:
             vid_cap = settings.get("video_caption") or ""
@@ -416,7 +416,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending video to {user.id}: {e}")
 
-    # 2. APK / Document
+    # 2. APK / Document Package
     if settings.get("apk_id"):
         try:
             apk_cap = settings.get("apk_caption") or ""
@@ -434,7 +434,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending APK to {user.id}: {e}")
 
-    # 3. Audio / Voice
+    # 3. Audio / Voice Package
     if settings.get("audio_id"):
         try:
             aud_cap = settings.get("audio_caption") or ""
@@ -481,9 +481,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         instr = (
             "🔘 **ADD STYLED & EMOJI ICON BUTTONS**\n\n"
             "Format mein message bhejey:\n\n"
-            "`Button 1: 🔴 DM FOR LOSS RECOVERY - https://t.me/yourusername | icon: 6111716252932119427 | style: danger`\n"
-            "`Button 2: 🟢 REGISTRATION LINK - https://bdg4.cc/#/register | icon: 5271604874419647061 | style: success`\n"
-            "`Button 3: 🔵 VIP CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon: 5001508545976337554 | style: primary`\n"
+            "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
+            "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`\n\n"
             "`Target: Video`\n\n"
             "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
         )
@@ -517,11 +516,11 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
 
     status_text = (
         "⚙️ **UPDATE JOIN REQUEST WELCOME PANEL**\n\n"
-        f"🎥 **Video Configured:** `{'Yes' if settings.get('video_id') else 'No'}` | Buttons: `{vid_btns_cnt}`\n"
+        f"🎥 **Video Configured:** `{'Yes' if settings.get('video_id') else 'NO (Video file Upload Karein!)'}` | Buttons: `{vid_btns_cnt}`\n"
         f"📁 **APK Configured:** `{'Yes' if settings.get('apk_id') else 'No'}` | Buttons: `{apk_btns_cnt}`\n"
         f"🎵 **Audio Configured:** `{'Yes' if settings.get('audio_id') else 'No'}` | Buttons: `{aud_btns_cnt}`\n"
         f"📝 **Text Configured:** `{'Yes' if settings.get('text') else 'No'}`\n\n"
-        "👇 Niche buttons par click karke media ya custom buttons update karein:"
+        "👇 **IMPORTANT:** Agar Video Configured 'NO' dikha raha hai toh **🎥 Change Video** par click karke pehle video upload karein!"
     )
 
     keyboard = [
@@ -633,7 +632,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if parsed_btns:
                 db_key = f"{target_media}_buttons"
                 update_welcome_setting({db_key: parsed_btns})
-                await message.reply_text(f"✅ `{len(parsed_btns)}` Styled Buttons successfully set for **{target_media.upper()}** message!", parse_mode="Markdown")
+                await message.reply_text(f"✅ `{len(parsed_btns)}` Styled Buttons successfully set for **{target_media.upper()}** message!\n\n⚠️ **Note:** Agar abhi tak **Video Upload** nahi ki hai toh `/updatejoinrequest` me jaakar **🎥 Change Video** par click karke video zaroor upload kar dein!", parse_mode="Markdown")
             else:
                 await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
             return
@@ -650,7 +649,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "video_caption": message.caption,
                 "video_entities": entities_data
             })
-            await message.reply_text("✅ Video with exact Caption & Emojis update ho gayi hai!")
+            await message.reply_text("✅ Video File with Caption & Emojis update ho gayi hai! Ab Join Request aane par yeh Video bilkul bhej di jayegi!")
             return
 
         elif state == "awaiting_apk" and message.document:
@@ -660,7 +659,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "apk_caption": message.caption,
                 "apk_entities": entities_data
             })
-            await message.reply_text("✅ APK File with exact Caption & Emojis update ho gayi hai!")
+            await message.reply_text("✅ APK File with Caption & Emojis update ho gayi hai!")
             return
 
         elif state == "awaiting_audio" and (message.audio or message.voice):
@@ -671,7 +670,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "audio_caption": message.caption,
                 "audio_entities": entities_data
             })
-            await message.reply_text("✅ Audio with exact Caption & Emojis update ho gayi hai!")
+            await message.reply_text("✅ Audio with Caption & Emojis update ho gayi hai!")
             return
 
     # 1. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
