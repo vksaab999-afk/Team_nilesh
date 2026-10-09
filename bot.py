@@ -270,22 +270,25 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
 
     if message.poll:
         async def _send():
+            poll = message.poll
+            options = [opt.text for opt in poll.options]
+            
             poll_kwargs = {
                 "chat_id": chat_id,
-                "question": message.poll.question,
-                "options": [opt.text for opt in message.poll.options],
-                "is_anonymous": message.poll.is_anonymous,
-                "type": message.poll.type,
-                "allows_multiple_answers": message.poll.allows_multiple_answers,
-                "correct_option_id": message.poll.correct_option_id,
-                "explanation": message.poll.explanation,
-                "explanation_entities": sanitize_entities(message.poll.explanation_entities),
+                "question": poll.question,
+                "options": options,
+                "is_anonymous": poll.is_anonymous,
+                "type": poll.type,
+                "allows_multiple_answers": poll.allows_multiple_answers,
             }
-            if reply_to_channel_msg_id:
-                poll_kwargs["reply_to_message_id"] = reply_to_channel_msg_id
-            if message_thread_id:
-                poll_kwargs["message_thread_id"] = message_thread_id
-                
+            
+            if poll.type == "quiz":
+                if poll.correct_option_id is not None:
+                    poll_kwargs["correct_option_id"] = poll.correct_option_id
+                if poll.explanation:
+                    poll_kwargs["explanation"] = poll.explanation
+                    poll_kwargs["explanation_entities"] = sanitize_entities(poll.explanation_entities)
+                    
             return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send)
 
@@ -534,18 +537,103 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 # ------------------------------------------------------------------
-# Poll & Quiz Helper Command
+# /poll and /quiz Text Commands (Direct Broadcast Engine)
 # ------------------------------------------------------------------
-async def poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
         return
-    await update.message.reply_text(
-        "📊 **Poll / Quiz Create Guide:**\n\n"
-        "Aap direct Telegram Chat me **Attachment Button (📎) -> Poll** par click karke koi bhi Poll ya Quiz create karein aur bot ko send kar dein.\n\n"
-        "Current mode ke according bot use channels ya users me instant broadcast kar dega!",
-        parse_mode="Markdown"
-    )
+
+    msg_text = update.message.text.strip()
+    cmd = "/quiz" if msg_text.lower().startswith("/quiz") else "/poll"
+    
+    # Remove command prefix
+    content = msg_text[len(cmd):].strip()
+    if not content:
+        await update.message.reply_text(f"⚠️ Usage:\n`{cmd} Question | Option 1 | Option 2`", parse_mode="Markdown")
+        return
+
+    parts = [p.strip() for p in content.split("|") if p.strip()]
+    
+    if cmd == "/poll":
+        if len(parts) < 3:
+            await update.message.reply_text("⚠️ `/poll Question | Option 1 | Option 2` Format me bhejey!")
+            return
+        question = parts[0]
+        options = parts[1:]
+        is_quiz = False
+        correct_id = None
+    else:
+        if len(parts) < 4:
+            await update.message.reply_text("⚠️ `/quiz Question | Option 1 | Option 2 | CorrectIndex(1,2)` Format me bhejey!")
+            return
+        
+        # Last element is the 1-based index for correct option
+        try:
+            correct_id = int(parts[-1]) - 1
+            question = parts[0]
+            options = parts[1:-1]
+            is_quiz = True
+        except ValueError:
+            await update.message.reply_text("⚠️ Quiz me last part correct option number hona chahiye (e.g. 1 ya 2)!")
+            return
+
+    current_mode = admin_modes.get(user.id, "channel")
+
+    if current_mode == "channel":
+        all_channels = list(channels_collection.find({}))
+        if not all_channels:
+            await update.message.reply_text("⚠️ Kisi channel me bot Admin nahi hai!")
+            return
+
+        success = 0
+        for ch in all_channels:
+            ch_id = ch["chat_id"]
+            try:
+                poll_kwargs = {
+                    "chat_id": ch_id,
+                    "question": question,
+                    "options": options,
+                    "is_anonymous": True,
+                    "type": "quiz" if is_quiz else "regular",
+                }
+                if is_quiz and correct_id is not None:
+                    poll_kwargs["correct_option_id"] = correct_id
+                    
+                await context.bot.send_poll(**poll_kwargs)
+                success += 1
+            except Exception as e:
+                logger.error(f"Failed to send poll to channel {ch_id}: {e}")
+
+        prefix_icon = "💡" if is_quiz else "📊"
+        msg_type = "Quiz" if is_quiz else "Poll"
+        await update.message.reply_text(f"{prefix_icon} {msg_type} broadcasted to {success}/{len(all_channels)} Channels!")
+
+    else:
+        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+        success = 0
+        for u in all_users:
+            u_id = u["user_id"]
+            try:
+                poll_kwargs = {
+                    "chat_id": u_id,
+                    "question": question,
+                    "options": options,
+                    "is_anonymous": True,
+                    "type": "quiz" if is_quiz else "regular",
+                }
+                if is_quiz and correct_id is not None:
+                    poll_kwargs["correct_option_id"] = correct_id
+                    
+                await context.bot.send_poll(**poll_kwargs)
+                success += 1
+                await asyncio.sleep(0.04)
+            except Exception:
+                pass
+
+        prefix_icon = "💡" if is_quiz else "📊"
+        msg_type = "Quiz" if is_quiz else "Poll"
+        await update.message.reply_text(f"{prefix_icon} {msg_type} broadcasted to {success}/{len(all_users)} Users!")
 
 # ------------------------------------------------------------------
 # Commands
@@ -811,8 +899,10 @@ def main():
     app_bot.add_handler(CommandHandler("stats", stats_command))
     app_bot.add_handler(CommandHandler("del", delete_broadcast))
     app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
-    app_bot.add_handler(CommandHandler("poll", poll_command))
-    app_bot.add_handler(CommandHandler("quiz", poll_command))
+    
+    # Specific Text Command Parsers for /poll and /quiz
+    app_bot.add_handler(CommandHandler("poll", poll_quiz_text_command))
+    app_bot.add_handler(CommandHandler("quiz", poll_quiz_text_command))
 
     # Handlers for Join Request & Callbacks
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
@@ -822,7 +912,7 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
-    logger.info("🤖 VIP Clean Join Request Broadcast Bot is running...")
+    logger.info("🤖 VIP Poll & Quiz Broadcast Bot is running...")
     
     app_bot.run_polling(drop_pending_updates=True)
 
