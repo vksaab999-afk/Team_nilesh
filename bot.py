@@ -85,29 +85,23 @@ except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
-# STYLED BUTTON HELPER (Exact Same Logic From Working Bot)
+# STYLED BUTTON HELPER (Safe & Bulletproof)
 # ------------------------------------------------------------------
 def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, callback_data=None):
     action = {"url": url} if url else {"callback_data": callback_data or "noop"}
-    modern = {"text": text, **action}
+    api_kwargs = {}
     
     if style:
-        modern["style"] = style
+        api_kwargs["style"] = style
     if icon_custom_emoji_id:
-        modern["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
+        api_kwargs["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
 
-    try:
-        return InlineKeyboardButton(**modern)
-    except TypeError:
-        api_kwargs = {}
-        if style:
-            api_kwargs["style"] = style
-        if icon_custom_emoji_id:
-            api_kwargs["icon_custom_emoji_id"] = str(icon_custom_emoji_id)
+    if api_kwargs:
         try:
             return InlineKeyboardButton(text=text, api_kwargs=api_kwargs, **action)
-        except TypeError:
+        except Exception:
             return InlineKeyboardButton(text=text, **action)
+    return InlineKeyboardButton(text=text, **action)
 
 # ------------------------------------------------------------------
 # Settings Helper Functions
@@ -209,7 +203,6 @@ def parse_buttons_text(raw_text):
             continue
 
         if "http://" in line or "https://" in line or "t.me" in line:
-            # Check for style and icon parameters
             style_val = None
             icon_val = None
             
@@ -223,7 +216,6 @@ def parse_buttons_text(raw_text):
                 icon_val = parts_i[1].strip().split()[0].strip(" []")
                 line = parts_i[0].strip()
 
-            # Clean prefixes
             cleaned_line = re.sub(r'button\s*\d+\s*:', '', line, flags=re.IGNORECASE).strip()
 
             subparts = cleaned_line.rsplit("http", 1)
@@ -389,10 +381,12 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (Styled Custom Buttons Enabled)
+# Join Request Handler
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
+    if not request:
+        return
     user = request.from_user
     settings = get_welcome_settings()
 
@@ -404,9 +398,9 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         upsert=True,
     )
 
-    try:
-        # 1. Video
-        if settings.get("video_id"):
+    # 1. Video
+    if settings.get("video_id"):
+        try:
             vid_cap = settings.get("video_caption") or ""
             vid_cap = vid_cap.replace("{name}", f"**{user_first_name}**")
             vid_entities = deserialize_entities(settings.get("video_entities"))
@@ -419,9 +413,12 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 caption_entities=vid_entities,
                 reply_markup=vid_markup
             )
+        except Exception as e:
+            logger.error(f"Error sending video to {user.id}: {e}")
 
-        # 2. APK / Document
-        if settings.get("apk_id"):
+    # 2. APK / Document
+    if settings.get("apk_id"):
+        try:
             apk_cap = settings.get("apk_caption") or ""
             apk_cap = apk_cap.replace("{name}", f"**{user_first_name}**")
             apk_entities = deserialize_entities(settings.get("apk_entities"))
@@ -434,9 +431,12 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 caption_entities=apk_entities,
                 reply_markup=apk_markup
             )
+        except Exception as e:
+            logger.error(f"Error sending APK to {user.id}: {e}")
 
-        # 3. Audio / Voice
-        if settings.get("audio_id"):
+    # 3. Audio / Voice
+    if settings.get("audio_id"):
+        try:
             aud_cap = settings.get("audio_caption") or ""
             aud_cap = aud_cap.replace("{name}", f"**{user_first_name}**")
             aud_entities = deserialize_entities(settings.get("audio_entities"))
@@ -449,9 +449,12 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 caption_entities=aud_entities,
                 reply_markup=aud_markup
             )
+        except Exception as e:
+            logger.error(f"Error sending audio to {user.id}: {e}")
 
-        # 4. Standalone Text
-        if settings.get("text"):
+    # 4. Standalone Text
+    if settings.get("text"):
+        try:
             raw_text = settings.get("text")
             formatted_text = raw_text.replace("{name}", f"**{user_first_name}**")
             
@@ -460,10 +463,10 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
                 text=formatted_text,
                 parse_mode="Markdown"
             )
+        except Exception as e:
+            logger.error(f"Error sending text to {user.id}: {e}")
 
-        logger.info(f"✅ Styled button media package delivered to {user.first_name} ({user.id})")
-    except Exception as e:
-        logger.error(f"❌ Failed to send join request package to {user.id}: {e}")
+    logger.info(f"✅ Join request handled for {user.first_name} ({user.id})")
 
 # ------------------------------------------------------------------
 # Callback Query Handler
