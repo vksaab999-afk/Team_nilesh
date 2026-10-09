@@ -111,7 +111,6 @@ def get_welcome_settings():
     if not doc:
         default_settings = {
             "_id": "welcome_config",
-            "text": None,
             "video_id": None,
             "video_caption": None,
             "video_entities": None,
@@ -198,8 +197,6 @@ def parse_buttons_text(raw_text):
                 target = "apk"
             elif "audio" in target_val or "voice" in target_val:
                 target = "audio"
-            elif "text" in target_val:
-                target = "text"
             continue
 
         if "http://" in line or "https://" in line or "t.me" in line:
@@ -381,7 +378,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (With Auto-Fallback & Robust Send)
+# Join Request Handler (Pure Clean Video, APK, Audio Deliver)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -452,21 +449,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending audio to {user.id}: {e}")
 
-    # 4. Standalone Text
-    if settings.get("text"):
-        try:
-            raw_text = settings.get("text")
-            formatted_text = raw_text.replace("{name}", f"**{user_first_name}**")
-            
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=formatted_text,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Error sending text to {user.id}: {e}")
-
-    logger.info(f"✅ Join request handled for {user.first_name} ({user.id})")
+    logger.info(f"✅ Pure media package delivered to {user.first_name} ({user.id})")
 
 # ------------------------------------------------------------------
 # Callback Query Handler
@@ -493,7 +476,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         admin_states[user.id] = f"awaiting_{setting_type}"
         
         labels = {
-            "text": "📝 Naya Standalone Welcome Text bhejey (Use `{name}` for Bold Name):",
             "video": "🎥 Nayi Video file bhejey (With Caption & Emojis):",
             "apk": "📁 Nayi APK / Document file bhejey (With Caption & Emojis):",
             "audio": "🎵 Nayi Audio file bhejey (With Caption & Emojis):",
@@ -516,16 +498,15 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
 
     status_text = (
         "⚙️ **UPDATE JOIN REQUEST WELCOME PANEL**\n\n"
-        f"🎥 **Video Configured:** `{'Yes' if settings.get('video_id') else 'NO (Video file Upload Karein!)'}` | Buttons: `{vid_btns_cnt}`\n"
+        f"🎥 **Video Configured:** `{'Yes' if settings.get('video_id') else 'No'}` | Buttons: `{vid_btns_cnt}`\n"
         f"📁 **APK Configured:** `{'Yes' if settings.get('apk_id') else 'No'}` | Buttons: `{apk_btns_cnt}`\n"
-        f"🎵 **Audio Configured:** `{'Yes' if settings.get('audio_id') else 'No'}` | Buttons: `{aud_btns_cnt}`\n"
-        f"📝 **Text Configured:** `{'Yes' if settings.get('text') else 'No'}`\n\n"
-        "👇 **IMPORTANT:** Agar Video Configured 'NO' dikha raha hai toh **🎥 Change Video** par click karke pehle video upload karein!"
+        f"🎵 **Audio Configured:** `{'Yes' if settings.get('audio_id') else 'No'}` | Buttons: `{aud_btns_cnt}`\n\n"
+        "👇 Niche buttons par click karke media ya custom buttons update karein:"
     )
 
     keyboard = [
         [InlineKeyboardButton("🎥 Change Video", callback_data="set_video"), InlineKeyboardButton("📁 Change APK", callback_data="set_apk")],
-        [InlineKeyboardButton("🎵 Change Audio", callback_data="set_audio"), InlineKeyboardButton("📝 Change Text", callback_data="set_text")],
+        [InlineKeyboardButton("🎵 Change Audio", callback_data="set_audio")],
         [InlineKeyboardButton("🔘 Add/Set Colorful Styled Buttons", callback_data="set_custom_buttons")],
     ]
 
@@ -632,14 +613,9 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if parsed_btns:
                 db_key = f"{target_media}_buttons"
                 update_welcome_setting({db_key: parsed_btns})
-                await message.reply_text(f"✅ `{len(parsed_btns)}` Styled Buttons successfully set for **{target_media.upper()}** message!\n\n⚠️ **Note:** Agar abhi tak **Video Upload** nahi ki hai toh `/updatejoinrequest` me jaakar **🎥 Change Video** par click karke video zaroor upload kar dein!", parse_mode="Markdown")
+                await message.reply_text(f"✅ `{len(parsed_btns)}` Styled Buttons successfully set for **{target_media.upper()}** message!", parse_mode="Markdown")
             else:
                 await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
-            return
-
-        elif state == "awaiting_text" and message.text:
-            update_welcome_setting({"text": message.text})
-            await message.reply_text("✅ Standalone Welcome Text update ho gaya hai!")
             return
 
         elif state == "awaiting_video" and message.video:
@@ -649,7 +625,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 "video_caption": message.caption,
                 "video_entities": entities_data
             })
-            await message.reply_text("✅ Video File with Caption & Emojis update ho gayi hai! Ab Join Request aane par yeh Video bilkul bhej di jayegi!")
+            await message.reply_text("✅ Video File with Caption & Emojis update ho gayi hai!")
             return
 
         elif state == "awaiting_apk" and message.document:
@@ -809,7 +785,7 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_all_messages))
 
-    logger.info("🤖 VIP Styled Button Broadcast Bot is running...")
+    logger.info("🤖 VIP Clean Join Request Broadcast Bot is running...")
     
     app_bot.run_polling(drop_pending_updates=True)
 
