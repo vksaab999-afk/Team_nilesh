@@ -56,6 +56,7 @@ if not TOKEN or not MONGO_URI:
 ADMIN_USER_IDS = [5785924075]
 admin_modes = {}
 admin_states = {}
+pending_broadcast_messages = {}  # Store pending broadcast msg awaiting custom buttons
 
 # ------------------------------------------------------------------
 # Flask keep-alive
@@ -118,7 +119,6 @@ async def setup_bot_commands(application):
             BotCommand("del", "🗑 channel pe dale kishi prediction ko delete karne ke liye 🟢")
         ]
 
-        # Directly applying to Admin Private Chat
         for admin_id in ADMIN_USER_IDS:
             try:
                 await application.bot.set_my_commands(
@@ -312,9 +312,10 @@ async def safe_call(coro_factory, retries: int = 3):
             await asyncio.sleep(2)
     return await coro_factory()
 
-async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None):
+async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
     text_entities = sanitize_entities(message.entities)
     caption_entities = sanitize_entities(message.caption_entities)
+    reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
     if message.poll:
         async def _send():
@@ -343,54 +344,54 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
     if message.text:
         async def _send():
             return await bot.send_message(
-                chat_id=chat_id, text=message.text, entities=text_entities,
+                chat_id=chat_id, text=override_text if override_text is not None else message.text, entities=text_entities,
                 reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-                reply_markup=message.reply_markup, disable_web_page_preview=False,
+                reply_markup=reply_markup_to_use, disable_web_page_preview=False,
             )
         return await safe_call(_send)
 
     if message.photo:
         async def _send():
             return await bot.send_photo(
-                chat_id=chat_id, photo=message.photo[-1].file_id, caption=message.caption,
+                chat_id=chat_id, photo=message.photo[-1].file_id, caption=override_caption if override_caption is not None else message.caption,
                 caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
             )
         return await safe_call(_send)
 
     if message.video:
         async def _send():
             return await bot.send_video(
-                chat_id=chat_id, video=message.video.file_id, caption=message.caption,
+                chat_id=chat_id, video=message.video.file_id, caption=override_caption if override_caption is not None else message.caption,
                 caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
             )
         return await safe_call(_send)
 
     if message.audio:
         async def _send():
             return await bot.send_audio(
-                chat_id=chat_id, audio=message.audio.file_id, caption=message.caption,
+                chat_id=chat_id, audio=message.audio.file_id, caption=override_caption if override_caption is not None else message.caption,
                 caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
             )
         return await safe_call(_send)
 
     if message.voice:
         async def _send():
             return await bot.send_voice(
-                chat_id=chat_id, voice=message.voice.file_id, caption=message.caption,
+                chat_id=chat_id, voice=message.voice.file_id, caption=override_caption if override_caption is not None else message.caption,
                 caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
             )
         return await safe_call(_send)
 
     if message.document:
         async def _send():
             return await bot.send_document(
-                chat_id=chat_id, document=message.document.file_id, caption=message.caption,
+                chat_id=chat_id, document=message.document.file_id, caption=override_caption if override_caption is not None else message.caption,
                 caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
             )
         return await safe_call(_send)
 
@@ -398,7 +399,7 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
         return await bot.copy_message(
             chat_id=chat_id, from_chat_id=message.chat_id, message_id=message.message_id,
             reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-            reply_markup=message.reply_markup,
+            reply_markup=reply_markup_to_use,
         )
     return await safe_call(_copy)
 
@@ -927,6 +928,92 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(f"🗑️ Message deleted from {deleted_count} channels!")
 
 # ------------------------------------------------------------------
+# Execution Helper for Dynamic Button Broadcast Dispatch
+# ------------------------------------------------------------------
+async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, admin_id: int, message, custom_markup, override_text=None, override_caption=None):
+    current_mode = admin_modes.get(admin_id, "channel")
+
+    if current_mode == "channel":
+        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
+        if not active_channels:
+            await context.bot.send_message(chat_id=admin_id, text="⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
+            return
+
+        reply_mapping = None
+        if message.reply_to_message:
+            replied_admin_msg_id = message.reply_to_message.message_id
+            mapping_doc = mappings_collection.find_one({"admin_msg_id": replied_admin_msg_id})
+            if mapping_doc:
+                reply_mapping = mapping_doc.get("channels", {})
+
+        sent_channels = {}
+
+        async def dispatch_channel(ch):
+            ch_id = ch["chat_id"]
+            reply_to_msg_id = reply_mapping.get(str(ch_id)) if reply_mapping else None
+            try:
+                sent_msg = await send_clean_with_entities(
+                    context.bot, ch_id, message, reply_to_channel_msg_id=reply_to_msg_id,
+                    custom_reply_markup=custom_markup, override_text=override_text, override_caption=override_caption
+                )
+                if sent_msg:
+                    return str(ch_id), sent_msg.message_id
+            except Exception as e:
+                logger.error(f"Failed to post in channel {ch_id}: {e}")
+            return None
+
+        results = await asyncio.gather(*(dispatch_channel(ch) for ch in active_channels))
+        for res in results:
+            if res:
+                ch_id_str, msg_id = res
+                sent_channels[ch_id_str] = msg_id
+
+        if sent_channels:
+            mappings_collection.insert_one({
+                "admin_msg_id": message.message_id,
+                "channels": sent_channels,
+                "created_at": datetime.now(timezone.utc)
+            })
+
+        await context.bot.send_message(chat_id=admin_id, text=f"📢 Broadcast (With Buttons) sent to {len(sent_channels)}/{len(active_channels)} Selected Channels!")
+
+    else:
+        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+        success = 0
+        cleaned_users = 0
+        queue = asyncio.Queue()
+
+        for u in all_users:
+            await queue.put(u["user_id"])
+
+        async def broadcast_worker():
+            nonlocal success, cleaned_users
+            while not queue.empty():
+                u_id = await queue.get()
+                try:
+                    await send_clean_with_entities(
+                        context.bot, u_id, message, custom_reply_markup=custom_markup,
+                        override_text=override_text, override_caption=override_caption
+                    )
+                    success += 1
+                    await asyncio.sleep(0.03)
+                except (Forbidden, BadRequest):
+                    users_collection.delete_one({"user_id": u_id})
+                    cleaned_users += 1
+                except Exception as e:
+                    logger.error(f"User broadcast failed for {u_id}: {e}")
+                finally:
+                    queue.task_done()
+
+        workers = [asyncio.create_task(broadcast_worker()) for _ in range(15)]
+        await queue.join()
+        for w in workers:
+            w.cancel()
+
+        clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
+        await context.bot.send_message(chat_id=admin_id, text=f"👥 Broadcast (With Buttons) sent to {success}/{len(all_users)} Users!{clean_msg}")
+
+# ------------------------------------------------------------------
 # Main Message Handler Logic
 # ------------------------------------------------------------------
 async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -937,10 +1024,37 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
-    # Admin Settings Inputs
+    # Admin Settings Inputs & Custom Button Interception
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
         state = admin_states.pop(user.id)
-        
+
+        # Handling Dynamic Buttons for /iwantaddbutton Trigger
+        if state == "awaiting_broadcast_buttons" and message.text:
+            pending_msg = pending_broadcast_messages.pop(user.id, None)
+            if not pending_msg:
+                await message.reply_text("⚠️ Koi pending message nahi mila. Kripya fir se koshish karein.")
+                return
+
+            parsed_btns, _ = parse_buttons_text(message.text)
+            if parsed_btns:
+                custom_markup = build_inline_keyboard(parsed_btns)
+                
+                # Remove /iwantaddbutton trigger text from final caption/text
+                clean_text = None
+                clean_caption = None
+                if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
+                    clean_text = pending_msg.text.replace("/iwantaddbutton", "").strip()
+                elif pending_msg.caption and "/iwantaddbutton" in pending_msg.caption:
+                    clean_caption = pending_msg.caption.replace("/iwantaddbutton", "").strip()
+
+                await dispatch_broadcast_with_markup(
+                    context, user.id, pending_msg, custom_markup,
+                    override_text=clean_text, override_caption=clean_caption
+                )
+            else:
+                await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
+            return
+
         if state == "awaiting_custom_buttons" and message.text:
             parsed_btns, target_media = parse_buttons_text(message.text)
             if parsed_btns:
@@ -1030,7 +1144,28 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error forwarding user msg to admin: {e}")
         return
 
-    # 3. ADMIN DIRECT DM MESSAGES -> PREDICTION / BROADCAST MODE
+    # 3. ADMIN DIRECT DM MESSAGES -> CHECK FOR /iwantaddbutton TRIGGER
+    msg_has_trigger = False
+    if message.text and "/iwantaddbutton" in message.text:
+        msg_has_trigger = True
+    elif message.caption and "/iwantaddbutton" in message.caption:
+        msg_has_trigger = True
+
+    if msg_has_trigger:
+        pending_broadcast_messages[user.id] = message
+        admin_states[user.id] = "awaiting_broadcast_buttons"
+
+        instr = (
+            "🔘 **ADD CUSTOM STYLED BUTTONS FOR THIS BROADCAST/PREDICTION**\n\n"
+            "Aapka message hold kar liya gaya hai! Ab buttons ka format bhejey:\n\n"
+            "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
+            "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`\n\n"
+            "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
+        )
+        await message.reply_text(instr, parse_mode="Markdown")
+        return
+
+    # NORMAL DIRECT BROADCAST/PREDICTION FLOW (WITHOUT BUTTON TRIGGER)
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
