@@ -397,14 +397,14 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = result.chat
     new_status = result.new_chat_member.status
     if new_status in ("administrator", "creator"):
-        # By default, welcome_enabled=True and prediction_enabled=True
         channels_collection.update_one(
             {"chat_id": chat.id},
             {"$setOnInsert": {
                 "title": chat.title,
                 "username": chat.username,
                 "welcome_enabled": True,
-                "prediction_enabled": True
+                "prediction_enabled": True,
+                "auto_accept_enabled": True  # Default Auto-Accept ON
             }},
             upsert=True,
         )
@@ -412,7 +412,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (With Channel Selective Logic)
+# Join Request Handler (With Instant Auto-Accept & Manual Toggle)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -422,7 +422,16 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = request.chat.id
     ch_doc = channels_collection.find_one({"chat_id": chat_id})
     
-    # Selective Check: Agar channel me welcome disabled hai toh message nahi jayega
+    # Check 1: Auto-Accept Logic
+    auto_accept = ch_doc.get("auto_accept_enabled", True) if ch_doc else True
+    if auto_accept:
+        try:
+            await request.approve()
+            logger.info(f"✅ Approved join request for {request.from_user.id} in {request.chat.title}")
+        except Exception as e:
+            logger.error(f"Failed to approve join request in {chat_id}: {e}")
+
+    # Check 2: Auto-Welcome Messages Logic
     if ch_doc and not ch_doc.get("welcome_enabled", True):
         logger.info(f"🚫 Auto-welcome disabled for channel {request.chat.title} ({chat_id})")
         return
@@ -494,7 +503,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info(f"✅ Auto-welcome delivered to {user.first_name} ({user.id}) for channel {request.chat.title}")
 
 # ------------------------------------------------------------------
-# Callback Query Handler (Includes Channel Toggle Logic)
+# Callback Query Handler
 # ------------------------------------------------------------------
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -502,6 +511,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     if user.id not in ADMIN_USER_IDS:
+        return
+
+    # Toggle Auto-Accept for Specific Channel
+    if query.data.startswith("toggle_accept_"):
+        ch_id = int(query.data.split("toggle_accept_")[1])
+        ch = channels_collection.find_one({"chat_id": ch_id})
+        if ch:
+            current_st = ch.get("auto_accept_enabled", True)
+            channels_collection.update_one({"chat_id": ch_id}, {"$set": {"auto_accept_enabled": not current_st}})
+            await show_join_request_channels_menu(query, is_edit=True)
         return
 
     # Toggle Welcome for Specific Channel
@@ -550,6 +569,36 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 # ------------------------------------------------------------------
 # Interactive Channel Selectors Helper Functions
 # ------------------------------------------------------------------
+async def show_join_request_channels_menu(target_obj, is_edit=False):
+    all_channels = list(channels_collection.find({}))
+    if not all_channels:
+        msg = "⚠️ Kisi channel me bot Admin nahi hai!"
+        if is_edit:
+            await target_obj.edit_message_text(msg)
+        else:
+            await target_obj.message.reply_text(msg)
+        return
+
+    keyboard = []
+    for ch in all_channels:
+        title = ch.get("title", f"Channel {ch['chat_id']}")
+        is_enabled = ch.get("auto_accept_enabled", True)
+        status_str = "⚡ Auto-Accept: ON" if is_enabled else "🛑 Auto-Accept: OFF (Manual)"
+        btn_text = f"{title} | {status_str}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"toggle_accept_{ch['chat_id']}")])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    text = (
+        "📥 **JOIN REQUEST AUTO-ACCEPT SETTINGS**\n\n"
+        "Jis channel me **Instant Auto-Accept** chahiye uspar `⚡ ON` rakhein.\n"
+        "Agar **Manually Accept** karna chahte hain toh click karke `🛑 OFF` kar dein:"
+    )
+    
+    if is_edit:
+        await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await target_obj.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+
 async def show_welcome_channels_menu(target_obj, is_edit=False):
     all_channels = list(channels_collection.find({}))
     if not all_channels:
@@ -605,6 +654,12 @@ async def show_prediction_channels_menu(target_obj, is_edit=False):
 # ------------------------------------------------------------------
 # Commands
 # ------------------------------------------------------------------
+async def joinrequest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+    await show_join_request_channels_menu(update)
+
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
@@ -939,7 +994,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
-        # Only send to prediction_enabled channels
         active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
         if not active_channels:
             await message.reply_text("⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
@@ -1029,6 +1083,7 @@ def main():
 
     # Commands
     app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("joinrequest", joinrequest_command))
     app_bot.add_handler(CommandHandler("welcome", welcome_command))
     app_bot.add_handler(CommandHandler("prediction", set_prediction_mode))
     app_bot.add_handler(CommandHandler("broadcast", set_broadcast_mode))
