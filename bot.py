@@ -87,17 +87,15 @@ try:
     user_topics_collection = db["user_forum_topics"]
     settings_collection = db["welcome_settings"]
 
-    # TTL Index: 7 Days Auto Clean Mappings
     mappings_collection.create_index("created_at", expireAfterSeconds=604800)
 except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
-# EXACT MENU COMMANDS SETUP (VIA DIRECT API CALL)
+# EXACT MENU COMMANDS SETUP
 # ------------------------------------------------------------------
 async def setup_bot_commands(application):
     try:
-        # 1. Normal Users Menu (Only /start)
         user_commands = [
             BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅")
         ]
@@ -106,7 +104,6 @@ async def setup_bot_commands(application):
             scope=BotCommandScopeDefault()
         )
 
-        # 2. Admin DM Chat Menu (Exact Text Provided)
         admin_commands = [
             BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅"),
             BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
@@ -133,7 +130,7 @@ async def setup_bot_commands(application):
         logger.error(f"❌ Error setting bot commands: {e}")
 
 # ------------------------------------------------------------------
-# STYLED BUTTON HELPER (FIXED FOR RAW PAYLOAD BUTTON EMOJI & STYLES)
+# STYLED BUTTON HELPER
 # ------------------------------------------------------------------
 def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, callback_data=None):
     action = {"url": url} if url else {"callback_data": callback_data or "noop"}
@@ -277,15 +274,6 @@ def parse_buttons_text(raw_text):
 
     return buttons, target
 
-# ------------------------------------------------------------------
-# Entity Preservation Bypass (FIXED FOR PREMIUM ANIMATED EMOJIS)
-# ------------------------------------------------------------------
-def preserve_all_entities(entities):
-    """Bypasses restriction filters to pass raw custom/animated emoji entities directly"""
-    if not entities:
-        return None
-    return list(entities)
-
 async def safe_call(coro_factory, retries: int = 3):
     for attempt in range(retries):
         try:
@@ -302,16 +290,17 @@ async def safe_call(coro_factory, retries: int = 3):
             await asyncio.sleep(2)
     return await coro_factory()
 
+# ------------------------------------------------------------------
+# RAW NATIVE ENGINE (PRESERVES ANIMATED CUSTOM EMOJIS FULLY)
+# ------------------------------------------------------------------
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
-    text_entities = preserve_all_entities(message.entities)
-    caption_entities = preserve_all_entities(message.caption_entities)
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
+    # Poll Handling
     if message.poll:
-        async def _send():
+        async def _send_poll():
             poll = message.poll
             options = [opt.text for opt in poll.options]
-            
             poll_kwargs = {
                 "chat_id": chat_id,
                 "question": poll.question,
@@ -320,78 +309,64 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
                 "type": poll.type,
                 "allows_multiple_answers": poll.allows_multiple_answers,
             }
-            
             if poll.type == "quiz":
                 if poll.correct_option_id is not None:
                     poll_kwargs["correct_option_id"] = poll.correct_option_id
                 if poll.explanation:
                     poll_kwargs["explanation"] = poll.explanation
-                    poll_kwargs["explanation_entities"] = preserve_all_entities(poll.explanation_entities)
-                    
+                    poll_kwargs["explanation_entities"] = poll.explanation_entities
             return await bot.send_poll(**poll_kwargs)
-        return await safe_call(_send)
+        return await safe_call(_send_poll)
 
-    if message.text:
-        async def _send():
-            return await bot.send_message(
-                chat_id=chat_id, text=override_text if override_text is not None else message.text, entities=text_entities,
-                reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-                reply_markup=reply_markup_to_use, disable_web_page_preview=False,
-            )
-        return await safe_call(_send)
+    # Overridden text or caption (from /iwantaddbutton)
+    if override_text is not None or override_caption is not None:
+        if message.text:
+            async def _send_txt():
+                return await bot.send_message(
+                    chat_id=chat_id, text=override_text, entities=message.entities,
+                    reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
+                    reply_markup=reply_markup_to_use, disable_web_page_preview=False
+                )
+            return await safe_call(_send_txt)
 
-    if message.photo:
-        async def _send():
-            return await bot.send_photo(
-                chat_id=chat_id, photo=message.photo[-1].file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
+        if message.photo:
+            async def _send_ph():
+                return await bot.send_photo(
+                    chat_id=chat_id, photo=message.photo[-1].file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_ph)
 
-    if message.video:
-        async def _send():
-            return await bot.send_video(
-                chat_id=chat_id, video=message.video.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
+        if message.video:
+            async def _send_vid():
+                return await bot.send_video(
+                    chat_id=chat_id, video=message.video.file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_vid)
 
-    if message.audio:
-        async def _send():
-            return await bot.send_audio(
-                chat_id=chat_id, audio=message.audio.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
+        if message.document:
+            async def _send_doc():
+                return await bot.send_document(
+                    chat_id=chat_id, document=message.document.file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_doc)
 
-    if message.voice:
-        async def _send():
-            return await bot.send_voice(
-                chat_id=chat_id, voice=message.voice.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
-
-    if message.document:
-        async def _send():
-            return await bot.send_document(
-                chat_id=chat_id, document=message.document.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
-
-    async def _copy():
+    # DEFAULT NATIVE DIRECT COPY (Preserves Animated Emoji Entities Directly at Server Level)
+    async def _native_copy():
         return await bot.copy_message(
-            chat_id=chat_id, from_chat_id=message.chat_id, message_id=message.message_id,
-            reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-            reply_markup=reply_markup_to_use,
+            chat_id=chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+            reply_to_message_id=reply_to_channel_msg_id,
+            message_thread_id=message_thread_id,
+            reply_markup=reply_markup_to_use
         )
-    return await safe_call(_copy)
+    return await safe_call(_native_copy)
 
 # ------------------------------------------------------------------
 # Forum Topic Resolver Engine
@@ -479,7 +454,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         upsert=True,
     )
 
-    # 1. Video Package
     if settings.get("video_id"):
         try:
             vid_cap = settings.get("video_caption") or ""
@@ -497,7 +471,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending video to {user.id}: {e}")
 
-    # 2. APK Package
     if settings.get("apk_id"):
         try:
             apk_cap = settings.get("apk_caption") or ""
@@ -515,7 +488,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending APK to {user.id}: {e}")
 
-    # 3. Audio Package
     if settings.get("audio_id"):
         try:
             aud_cap = settings.get("audio_caption") or ""
@@ -588,7 +560,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif query.data.startswith("set_"):
         setting_type = query.data.split("set_")[1]
         admin_states[user.id] = f"awaiting_{setting_type}"
-        
         labels = {
             "video": "🎥 Nayi Video file bhejey (With Caption & Emojis):",
             "apk": "📁 Nayi APK / Document file bhejey (With Caption & Emojis):",
@@ -623,7 +594,6 @@ async def show_join_request_channels_menu(target_obj, is_edit=False):
         "Jis channel me **Instant Auto-Accept** chahiye uspar `⚡ ON` rakhein.\n"
         "Agar **Manually Accept** karna chahte hain toh click karke `🛑 OFF` kar dein:"
     )
-    
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -649,7 +619,6 @@ async def show_welcome_channels_menu(target_obj, is_edit=False):
 
     markup = InlineKeyboardMarkup(keyboard)
     text = "⚙️ **AUTO-WELCOME CHANNEL SETTINGS**\n\nJis channel me Auto-Welcome ON rakhna hai uspar ✅ click karein, jisme OFF rakhna hai uspar ❌ click karein:"
-    
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -675,7 +644,6 @@ async def show_prediction_channels_menu(target_obj, is_edit=False):
 
     markup = InlineKeyboardMarkup(keyboard)
     text = "📢 **PREDICTION MODE CHANNEL SETTINGS**\n\nPrediction Mode Active hai! Jinn channels par message post hona chahiye wahan ✅ select rakhein:"
-
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -707,7 +675,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_USER_IDS:
         return
     admin_modes[user.id] = "user"
-    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot के **Users** ko private chat me jayega.", parse_mode="Markdown")
+    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.", parse_mode="Markdown")
 
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1242,23 +1210,20 @@ def main():
 
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
-    # Commands Registration
     app_bot.add_handler(CommandHandler("start", start_command))
     app_bot.add_handler(CommandHandler("prediction", prediction_command))
     app_bot.add_handler(CommandHandler("broadcast", broadcast_command))
     app_bot.add_handler(CommandHandler("welcome", welcome_command))
     app_bot.add_handler(CommandHandler("joinrequest", joinrequest_command))
-    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command)) # Secret Custom Command
+    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
     app_bot.add_handler(CommandHandler("quiz", quiz_poll_command))
     app_bot.add_handler(CommandHandler("poll", quiz_poll_command))
     app_bot.add_handler(CommandHandler("stats", stats_command))
     app_bot.add_handler(CommandHandler("del", delete_broadcast))
 
-    # Handlers for Join Request & Callbacks
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
     app_bot.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    # Core Event Handlers
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
