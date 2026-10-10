@@ -11,6 +11,9 @@ from telegram import (
     MessageEntity,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    BotCommand,
+    BotCommandScopeDefault,
+    BotCommandScopeAllChatAdministrators,
 )
 from telegram.error import RetryAfter, Forbidden, BadRequest
 from telegram.ext import (
@@ -87,6 +90,41 @@ try:
     mappings_collection.create_index("created_at", expireAfterSeconds=604800)
 except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
+
+# ------------------------------------------------------------------
+# AUTOMATIC MENU COMMANDS SETUP (VIA CODE)
+# ------------------------------------------------------------------
+async def setup_bot_commands(application):
+    try:
+        # 1. Normal Users Menu (Only /start)
+        user_commands = [
+            BotCommand("start", "🚀 Start Bot / Refresh")
+        ]
+        await application.bot.set_my_commands(
+            commands=user_commands,
+            scope=BotCommandScopeDefault()
+        )
+
+        # 2. Admin Menu (All 9 Commands)
+        admin_commands = [
+            BotCommand("start", "🚀 Start Bot / Refresh"),
+            BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye"),
+            BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye"),
+            BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye"),
+            BotCommand("joinrequest", "📥 konse channel me join request auto accept honi chahiya konse me nahi set karne ke liye"),
+            BotCommand("quiz", "🧩 channel ya User's ko quiz bhejne ke liye"),
+            BotCommand("poll", "📊 channel ya User's ko poll bhejne ke liye"),
+            BotCommand("stats", "📊 View Bot Statistics dekhne ke liye"),
+            BotCommand("del", "🗑 channel pe dale kishi prediction ko delete karne ke liye")
+        ]
+        await application.bot.set_my_commands(
+            commands=admin_commands,
+            scope=BotCommandScopeAllChatAdministrators()
+        )
+
+        logger.info("✅ Bot Menu Commands successfully set via Code!")
+    except Exception as e:
+        logger.error(f"❌ Error setting bot commands automatically: {e}")
 
 # ------------------------------------------------------------------
 # STYLED BUTTON HELPER
@@ -404,7 +442,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "username": chat.username,
                 "welcome_enabled": True,
                 "prediction_enabled": True,
-                "auto_accept_enabled": True  # Default Auto-Accept ON
+                "auto_accept_enabled": True
             }},
             upsert=True,
         )
@@ -412,7 +450,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler (With Instant Auto-Accept & Manual Toggle)
+# Join Request Handler
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
@@ -513,7 +551,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if user.id not in ADMIN_USER_IDS:
         return
 
-    # Toggle Auto-Accept for Specific Channel
     if query.data.startswith("toggle_accept_"):
         ch_id = int(query.data.split("toggle_accept_")[1])
         ch = channels_collection.find_one({"chat_id": ch_id})
@@ -523,7 +560,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await show_join_request_channels_menu(query, is_edit=True)
         return
 
-    # Toggle Welcome for Specific Channel
     if query.data.startswith("toggle_wel_"):
         ch_id = int(query.data.split("toggle_wel_")[1])
         ch = channels_collection.find_one({"chat_id": ch_id})
@@ -533,7 +569,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await show_welcome_channels_menu(query, is_edit=True)
         return
 
-    # Toggle Prediction for Specific Channel
     if query.data.startswith("toggle_pred_"):
         ch_id = int(query.data.split("toggle_pred_")[1])
         ch = channels_collection.find_one({"chat_id": ch_id})
@@ -652,13 +687,32 @@ async def show_prediction_channels_menu(target_obj, is_edit=False):
         await target_obj.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
 
 # ------------------------------------------------------------------
-# Commands
+# Admin & User Commands Setup
 # ------------------------------------------------------------------
-async def joinrequest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    users_collection.update_one(
+        {"user_id": user.id},
+        {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
+        upsert=True,
+    )
+    await update.message.reply_text(
+        f"👋 Welcome {user.first_name}!\nAapka swagat hai. Aap jo bhi message bhejenge, hamari team tak pahunch jayega."
+    )
+
+async def prediction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
         return
-    await show_join_request_channels_menu(update)
+    admin_modes[user.id] = "channel"
+    await show_prediction_channels_menu(update)
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+    admin_modes[user.id] = "user"
+    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.", parse_mode="Markdown")
 
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -666,19 +720,11 @@ async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await show_welcome_channels_menu(update)
 
-async def set_prediction_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def joinrequest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
         return
-    admin_modes[user.id] = "channel"
-    await show_prediction_channels_menu(update)
-
-async def set_broadcast_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_USER_IDS:
-        return
-    admin_modes[user.id] = "user"
-    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.", parse_mode="Markdown")
+    await show_join_request_channels_menu(update)
 
 async def update_join_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -686,13 +732,12 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
         return
 
     settings = get_welcome_settings()
-    
     vid_btns_cnt = len(settings.get("video_buttons", []))
     apk_btns_cnt = len(settings.get("apk_buttons", []))
     aud_btns_cnt = len(settings.get("audio_buttons", []))
 
     status_text = (
-        "⚙️ **UPDATE JOIN REQUEST WELCOME PANEL**\n\n"
+        "⚙️ **SECRET WELCOME PANEL**\n\n"
         f"🎥 **Video Configured:** `{'Yes' if settings.get('video_id') else 'No'}` | Buttons: `{vid_btns_cnt}`\n"
         f"📁 **APK Configured:** `{'Yes' if settings.get('apk_id') else 'No'}` | Buttons: `{apk_btns_cnt}`\n"
         f"🎵 **Audio Configured:** `{'Yes' if settings.get('audio_id') else 'No'}` | Buttons: `{aud_btns_cnt}`\n\n"
@@ -707,7 +752,7 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
 
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def quiz_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
         return
@@ -821,17 +866,6 @@ async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_T
         prefix_icon = "💡" if is_quiz else "📊"
         msg_type = "Quiz" if is_quiz else "Poll"
         await update.message.reply_text(f"{prefix_icon} {msg_type} broadcasted to {success}/{len(all_users)} Users!")
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    users_collection.update_one(
-        {"user_id": user.id},
-        {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
-        upsert=True,
-    )
-    await update.message.reply_text(
-        f"👋 Welcome {user.first_name}!\nAapka swagat hai. Aap jo bhi message bhejenge, hamari team tak pahunch jayega."
-    )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1081,19 +1115,17 @@ def main():
 
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
-    # Commands
+    # Commands Registration
     app_bot.add_handler(CommandHandler("start", start_command))
-    app_bot.add_handler(CommandHandler("joinrequest", joinrequest_command))
+    app_bot.add_handler(CommandHandler("prediction", prediction_command))
+    app_bot.add_handler(CommandHandler("broadcast", broadcast_command))
     app_bot.add_handler(CommandHandler("welcome", welcome_command))
-    app_bot.add_handler(CommandHandler("prediction", set_prediction_mode))
-    app_bot.add_handler(CommandHandler("broadcast", set_broadcast_mode))
+    app_bot.add_handler(CommandHandler("joinrequest", joinrequest_command))
+    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command)) # Secret Custom Command
+    app_bot.add_handler(CommandHandler("quiz", quiz_poll_command))
+    app_bot.add_handler(CommandHandler("poll", quiz_poll_command))
     app_bot.add_handler(CommandHandler("stats", stats_command))
     app_bot.add_handler(CommandHandler("del", delete_broadcast))
-    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
-    
-    # Specific Text Command Parsers for /poll and /quiz
-    app_bot.add_handler(CommandHandler("poll", poll_quiz_text_command))
-    app_bot.add_handler(CommandHandler("quiz", poll_quiz_text_command))
 
     # Handlers for Join Request & Callbacks
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
@@ -1102,6 +1134,12 @@ def main():
     # Core Event Handlers
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
+
+    # Post-initialization Hook to set Commands via API Automatically
+    async def post_init(application):
+        await setup_bot_commands(application)
+
+    app_bot.post_init = post_init
 
     logger.info("🤖 VIP High-Speed Prediction & Broadcast Bot is running...")
     
