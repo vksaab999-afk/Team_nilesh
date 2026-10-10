@@ -56,7 +56,7 @@ if not TOKEN or not MONGO_URI:
 ADMIN_USER_IDS = [5785924075]
 admin_modes = {}
 admin_states = {}
-pending_broadcast_messages = {}  # Store pending broadcast msg awaiting custom buttons
+pending_broadcast_messages = {}
 
 # ------------------------------------------------------------------
 # Flask keep-alive
@@ -133,7 +133,7 @@ async def setup_bot_commands(application):
         logger.error(f"❌ Error setting bot commands: {e}")
 
 # ------------------------------------------------------------------
-# STYLED BUTTON HELPER
+# STYLED BUTTON HELPER (FIXED FOR RAW PAYLOAD BUTTON EMOJI & STYLES)
 # ------------------------------------------------------------------
 def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, callback_data=None):
     action = {"url": url} if url else {"callback_data": callback_data or "noop"}
@@ -278,23 +278,13 @@ def parse_buttons_text(raw_text):
     return buttons, target
 
 # ------------------------------------------------------------------
-# Entity Sanitization & Safe Call
+# Entity Preservation Bypass (FIXED FOR PREMIUM ANIMATED EMOJIS)
 # ------------------------------------------------------------------
-_ALLOWED_ENTITY_TYPES = {
-    MessageEntity.MENTION, MessageEntity.HASHTAG, MessageEntity.CASHTAG,
-    MessageEntity.BOT_COMMAND, MessageEntity.URL, MessageEntity.EMAIL,
-    MessageEntity.PHONE_NUMBER, MessageEntity.BOLD, MessageEntity.ITALIC,
-    MessageEntity.UNDERLINE, MessageEntity.STRIKETHROUGH, MessageEntity.SPOILER,
-    MessageEntity.CODE, MessageEntity.PRE, MessageEntity.TEXT_LINK,
-    MessageEntity.TEXT_MENTION, MessageEntity.CUSTOM_EMOJI,
-    MessageEntity.BLOCKQUOTE, MessageEntity.EXPANDABLE_BLOCKQUOTE,
-}
-
-def sanitize_entities(entities):
+def preserve_all_entities(entities):
+    """Bypasses restriction filters to pass raw custom/animated emoji entities directly"""
     if not entities:
         return None
-    cleaned = [e for e in entities if e.type in _ALLOWED_ENTITY_TYPES]
-    return cleaned or None
+    return list(entities)
 
 async def safe_call(coro_factory, retries: int = 3):
     for attempt in range(retries):
@@ -313,8 +303,8 @@ async def safe_call(coro_factory, retries: int = 3):
     return await coro_factory()
 
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
-    text_entities = sanitize_entities(message.entities)
-    caption_entities = sanitize_entities(message.caption_entities)
+    text_entities = preserve_all_entities(message.entities)
+    caption_entities = preserve_all_entities(message.caption_entities)
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
     if message.poll:
@@ -336,7 +326,7 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
                     poll_kwargs["correct_option_id"] = poll.correct_option_id
                 if poll.explanation:
                     poll_kwargs["explanation"] = poll.explanation
-                    poll_kwargs["explanation_entities"] = sanitize_entities(poll.explanation_entities)
+                    poll_kwargs["explanation_entities"] = preserve_all_entities(poll.explanation_entities)
                     
             return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send)
@@ -467,7 +457,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = request.chat.id
     ch_doc = channels_collection.find_one({"chat_id": chat_id})
     
-    # Check 1: Auto-Accept Logic
     auto_accept = ch_doc.get("auto_accept_enabled", True) if ch_doc else True
     if auto_accept:
         try:
@@ -476,7 +465,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Failed to approve join request in {chat_id}: {e}")
 
-    # Check 2: Auto-Welcome Messages Logic
     if ch_doc and not ch_doc.get("welcome_enabled", True):
         logger.info(f"🚫 Auto-welcome disabled for channel {request.chat.title} ({chat_id})")
         return
@@ -509,7 +497,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending video to {user.id}: {e}")
 
-    # 2. APK / Document Package
+    # 2. APK Package
     if settings.get("apk_id"):
         try:
             apk_cap = settings.get("apk_caption") or ""
@@ -527,7 +515,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending APK to {user.id}: {e}")
 
-    # 3. Audio / Voice Package
+    # 3. Audio Package
     if settings.get("audio_id"):
         try:
             aud_cap = settings.get("audio_caption") or ""
@@ -719,7 +707,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_USER_IDS:
         return
     admin_modes[user.id] = "user"
-    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.", parse_mode="Markdown")
+    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot के **Users** ko private chat me jayega.", parse_mode="Markdown")
 
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1028,7 +1016,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
         state = admin_states.pop(user.id)
 
-        # Handling Dynamic Buttons for /iwantaddbutton Trigger
         if state == "awaiting_broadcast_buttons" and message.text:
             pending_msg = pending_broadcast_messages.pop(user.id, None)
             if not pending_msg:
@@ -1039,7 +1026,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             if parsed_btns:
                 custom_markup = build_inline_keyboard(parsed_btns)
                 
-                # Remove /iwantaddbutton trigger text from final caption/text
                 clean_text = None
                 clean_caption = None
                 if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
@@ -1165,7 +1151,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text(instr, parse_mode="Markdown")
         return
 
-    # NORMAL DIRECT BROADCAST/PREDICTION FLOW (WITHOUT BUTTON TRIGGER)
+    # NORMAL DIRECT BROADCAST/PREDICTION FLOW
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
@@ -1276,7 +1262,6 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
-    # Hook to automatically apply exact Admin DM Chat Commands
     async def post_init(application):
         await setup_bot_commands(application)
 
