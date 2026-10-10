@@ -13,7 +13,7 @@ from telegram import (
     InlineKeyboardMarkup,
     BotCommand,
     BotCommandScopeDefault,
-    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeChat,
 )
 from telegram.error import RetryAfter, Forbidden, BadRequest
 from telegram.ext import (
@@ -92,39 +92,45 @@ except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
-# AUTOMATIC MENU COMMANDS SETUP (VIA CODE)
+# EXACT MENU COMMANDS SETUP (VIA DIRECT API CALL)
 # ------------------------------------------------------------------
 async def setup_bot_commands(application):
     try:
         # 1. Normal Users Menu (Only /start)
         user_commands = [
-            BotCommand("start", "🚀 Start Bot / Refresh")
+            BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅")
         ]
         await application.bot.set_my_commands(
             commands=user_commands,
             scope=BotCommandScopeDefault()
         )
 
-        # 2. Admin Menu (All 9 Commands)
+        # 2. Admin DM Chat Menu (Exact Text Provided)
         admin_commands = [
-            BotCommand("start", "🚀 Start Bot / Refresh"),
-            BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye"),
-            BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye"),
-            BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye"),
-            BotCommand("joinrequest", "📥 konse channel me join request auto accept honi chahiya konse me nahi set karne ke liye"),
-            BotCommand("quiz", "🧩 channel ya User's ko quiz bhejne ke liye"),
-            BotCommand("poll", "📊 channel ya User's ko poll bhejne ke liye"),
-            BotCommand("stats", "📊 View Bot Statistics dekhne ke liye"),
-            BotCommand("del", "🗑 channel pe dale kishi prediction ko delete karne ke liye")
+            BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅"),
+            BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
+            BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye ✅"),
+            BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye ✅"),
+            BotCommand("joinrequest", "📥 konse channel me join request auto accept honi chahiya konse me nahi set karne ke liye ✅"),
+            BotCommand("quiz", "🧩 channel ya User's ko quiz bhejne ke liye ✅"),
+            BotCommand("poll", "📊 channel ya User's ko poll bhejne ke liye ✅"),
+            BotCommand("stats", "📊 View Bot Statistics dekhne ke liye ✅"),
+            BotCommand("del", "🗑 channel pe dale kishi prediction ko delete karne ke liye 🟢")
         ]
-        await application.bot.set_my_commands(
-            commands=admin_commands,
-            scope=BotCommandScopeAllChatAdministrators()
-        )
 
-        logger.info("✅ Bot Menu Commands successfully set via Code!")
+        # Directly applying to Admin Private Chat
+        for admin_id in ADMIN_USER_IDS:
+            try:
+                await application.bot.set_my_commands(
+                    commands=admin_commands,
+                    scope=BotCommandScopeChat(chat_id=admin_id)
+                )
+                logger.info(f"✅ Exact Admin Menu Commands applied for Admin ID: {admin_id}")
+            except Exception as err:
+                logger.error(f"Could not set commands for admin {admin_id}: {err}")
+
     except Exception as e:
-        logger.error(f"❌ Error setting bot commands automatically: {e}")
+        logger.error(f"❌ Error setting bot commands: {e}")
 
 # ------------------------------------------------------------------
 # STYLED BUTTON HELPER
@@ -1135,7 +1141,7 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
-    # Post-initialization Hook to set Commands via API Automatically
+    # Hook to automatically apply exact Admin DM Chat Commands
     async def post_init(application):
         await setup_bot_commands(application)
 
