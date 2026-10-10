@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import asyncio
+from datetime import datetime, timezone
 from threading import Thread
 
 from flask import Flask
@@ -71,7 +72,7 @@ def keep_alive():
     t.start()
 
 # ------------------------------------------------------------------
-# Mongo Setup
+# Mongo Setup & Auto-TTL Index
 # ------------------------------------------------------------------
 try:
     client = MongoClient(MONGO_URI)
@@ -81,6 +82,9 @@ try:
     users_collection = db["bot_users"]
     user_topics_collection = db["user_forum_topics"]
     settings_collection = db["welcome_settings"]
+
+    # TTL Index: 7 Days Auto Clean Mappings
+    mappings_collection.create_index("created_at", expireAfterSeconds=604800)
 except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
@@ -393,24 +397,38 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = result.chat
     new_status = result.new_chat_member.status
     if new_status in ("administrator", "creator"):
+        # By default, welcome_enabled=True and prediction_enabled=True
         channels_collection.update_one(
             {"chat_id": chat.id},
-            {"$set": {"title": chat.title, "username": chat.username}},
+            {"$setOnInsert": {
+                "title": chat.title,
+                "username": chat.username,
+                "welcome_enabled": True,
+                "prediction_enabled": True
+            }},
             upsert=True,
         )
     elif new_status in ("left", "kicked", "member"):
         channels_collection.delete_one({"chat_id": chat.id})
 
 # ------------------------------------------------------------------
-# Join Request Handler
+# Join Request Handler (With Channel Selective Logic)
 # ------------------------------------------------------------------
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
     if not request:
         return
+    
+    chat_id = request.chat.id
+    ch_doc = channels_collection.find_one({"chat_id": chat_id})
+    
+    # Selective Check: Agar channel me welcome disabled hai toh message nahi jayega
+    if ch_doc and not ch_doc.get("welcome_enabled", True):
+        logger.info(f"🚫 Auto-welcome disabled for channel {request.chat.title} ({chat_id})")
+        return
+
     user = request.from_user
     settings = get_welcome_settings()
-
     user_first_name = user.first_name or "User"
 
     users_collection.update_one(
@@ -473,15 +491,38 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending audio to {user.id}: {e}")
 
-    logger.info(f"✅ Pure media package delivered to {user.first_name} ({user.id})")
+    logger.info(f"✅ Auto-welcome delivered to {user.first_name} ({user.id}) for channel {request.chat.title}")
 
 # ------------------------------------------------------------------
-# Callback Query Handler
+# Callback Query Handler (Includes Channel Toggle Logic)
 # ------------------------------------------------------------------
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
     await query.answer()
+
+    if user.id not in ADMIN_USER_IDS:
+        return
+
+    # Toggle Welcome for Specific Channel
+    if query.data.startswith("toggle_wel_"):
+        ch_id = int(query.data.split("toggle_wel_")[1])
+        ch = channels_collection.find_one({"chat_id": ch_id})
+        if ch:
+            current_st = ch.get("welcome_enabled", True)
+            channels_collection.update_one({"chat_id": ch_id}, {"$set": {"welcome_enabled": not current_st}})
+            await show_welcome_channels_menu(query, is_edit=True)
+        return
+
+    # Toggle Prediction for Specific Channel
+    if query.data.startswith("toggle_pred_"):
+        ch_id = int(query.data.split("toggle_pred_")[1])
+        ch = channels_collection.find_one({"chat_id": ch_id})
+        if ch:
+            current_st = ch.get("prediction_enabled", True)
+            channels_collection.update_one({"chat_id": ch_id}, {"$set": {"prediction_enabled": not current_st}})
+            await show_prediction_channels_menu(query, is_edit=True)
+        return
 
     if query.data == "set_custom_buttons":
         admin_states[user.id] = "awaiting_custom_buttons"
@@ -507,8 +548,83 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(labels.get(setting_type, "Send input:"))
 
 # ------------------------------------------------------------------
-# /updatejoinrequest Command Admin Panel
+# Interactive Channel Selectors Helper Functions
 # ------------------------------------------------------------------
+async def show_welcome_channels_menu(target_obj, is_edit=False):
+    all_channels = list(channels_collection.find({}))
+    if not all_channels:
+        msg = "⚠️ Kisi channel me bot Admin nahi hai!"
+        if is_edit:
+            await target_obj.edit_message_text(msg)
+        else:
+            await target_obj.message.reply_text(msg)
+        return
+
+    keyboard = []
+    for ch in all_channels:
+        title = ch.get("title", f"Channel {ch['chat_id']}")
+        is_enabled = ch.get("welcome_enabled", True)
+        status_icon = "✅" if is_enabled else "❌"
+        btn_text = f"{status_icon} {title}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"toggle_wel_{ch['chat_id']}")])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    text = "⚙️ **AUTO-WELCOME CHANNEL SETTINGS**\n\nJis channel me Auto-Welcome ON rakhna hai uspar ✅ click karein, jisme OFF rakhna hai uspar ❌ click karein:"
+    
+    if is_edit:
+        await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await target_obj.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+
+async def show_prediction_channels_menu(target_obj, is_edit=False):
+    all_channels = list(channels_collection.find({}))
+    if not all_channels:
+        msg = "⚠️ Kisi channel me bot Admin nahi hai!"
+        if is_edit:
+            await target_obj.edit_message_text(msg)
+        else:
+            await target_obj.message.reply_text(msg)
+        return
+
+    keyboard = []
+    for ch in all_channels:
+        title = ch.get("title", f"Channel {ch['chat_id']}")
+        is_enabled = ch.get("prediction_enabled", True)
+        status_icon = "✅" if is_enabled else "❌"
+        btn_text = f"{status_icon} {title}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"toggle_pred_{ch['chat_id']}")])
+
+    markup = InlineKeyboardMarkup(keyboard)
+    text = "📢 **PREDICTION MODE CHANNEL SETTINGS**\n\nPrediction Mode Active hai! Jinn channels par message post hona chahiye wahan ✅ select rakhein:"
+
+    if is_edit:
+        await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        await target_obj.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+
+# ------------------------------------------------------------------
+# Commands
+# ------------------------------------------------------------------
+async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+    await show_welcome_channels_menu(update)
+
+async def set_prediction_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+    admin_modes[user.id] = "channel"
+    await show_prediction_channels_menu(update)
+
+async def set_broadcast_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+    admin_modes[user.id] = "user"
+    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.", parse_mode="Markdown")
+
 async def update_join_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
@@ -536,9 +652,6 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
 
     await update.message.reply_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# ------------------------------------------------------------------
-# /poll and /quiz Text Commands (Direct Broadcast Engine)
-# ------------------------------------------------------------------
 async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
@@ -547,14 +660,21 @@ async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_T
     msg_text = update.message.text.strip()
     cmd = "/quiz" if msg_text.lower().startswith("/quiz") else "/poll"
     
-    # Remove command prefix
     content = msg_text[len(cmd):].strip()
     if not content:
         await update.message.reply_text(f"⚠️ Usage:\n`{cmd} Question | Option 1 | Option 2`", parse_mode="Markdown")
         return
 
-    parts = [p.strip() for p in content.split("|") if p.strip()]
-    
+    if "|" in content:
+        parts = [p.strip() for p in content.split("|") if p.strip()]
+    else:
+        lines = [line.strip() for line in content.split("\n") if line.strip()]
+        parts = []
+        for line in lines:
+            cleaned = re.sub(r'^(Question\s*[-:]*|\d+[\.\)]\s*|Option\s*\d*[-:]*)', '', line, flags=re.IGNORECASE).strip()
+            if cleaned:
+                parts.append(cleaned)
+
     if cmd == "/poll":
         if len(parts) < 3:
             await update.message.reply_text("⚠️ `/poll Question | Option 1 | Option 2` Format me bhejey!")
@@ -565,29 +685,26 @@ async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_T
         correct_id = None
     else:
         if len(parts) < 4:
-            await update.message.reply_text("⚠️ `/quiz Question | Option 1 | Option 2 | CorrectIndex(1,2)` Format me bhejey!")
+            await update.message.reply_text("⚠️ `/quiz Question | Option 1 | Option 2 | 1` Format me bhejey!")
             return
-        
-        # Last element is the 1-based index for correct option
         try:
             correct_id = int(parts[-1]) - 1
             question = parts[0]
             options = parts[1:-1]
             is_quiz = True
         except ValueError:
-            await update.message.reply_text("⚠️ Quiz me last part correct option number hona chahiye (e.g. 1 ya 2)!")
+            await update.message.reply_text("⚠️ Quiz me last part correct option index (e.g. 1 ya 2) hona chahiye!")
             return
 
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
-        all_channels = list(channels_collection.find({}))
-        if not all_channels:
-            await update.message.reply_text("⚠️ Kisi channel me bot Admin nahi hai!")
+        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
+        if not active_channels:
+            await update.message.reply_text("⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
             return
 
-        success = 0
-        for ch in all_channels:
+        async def send_to_ch(ch):
             ch_id = ch["chat_id"]
             try:
                 poll_kwargs = {
@@ -599,45 +716,57 @@ async def poll_quiz_text_command(update: Update, context: ContextTypes.DEFAULT_T
                 }
                 if is_quiz and correct_id is not None:
                     poll_kwargs["correct_option_id"] = correct_id
-                    
                 await context.bot.send_poll(**poll_kwargs)
-                success += 1
-            except Exception as e:
-                logger.error(f"Failed to send poll to channel {ch_id}: {e}")
+                return True
+            except Exception:
+                return False
+
+        results = await asyncio.gather(*(send_to_ch(ch) for ch in active_channels))
+        success = sum(1 for r in results if r)
 
         prefix_icon = "💡" if is_quiz else "📊"
         msg_type = "Quiz" if is_quiz else "Poll"
-        await update.message.reply_text(f"{prefix_icon} {msg_type} broadcasted to {success}/{len(all_channels)} Channels!")
+        await update.message.reply_text(f"{prefix_icon} {msg_type} broadcasted to {success}/{len(active_channels)} Selected Channels!")
 
     else:
         all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
         success = 0
+        queue = asyncio.Queue()
+
         for u in all_users:
-            u_id = u["user_id"]
-            try:
-                poll_kwargs = {
-                    "chat_id": u_id,
-                    "question": question,
-                    "options": options,
-                    "is_anonymous": True,
-                    "type": "quiz" if is_quiz else "regular",
-                }
-                if is_quiz and correct_id is not None:
-                    poll_kwargs["correct_option_id"] = correct_id
-                    
-                await context.bot.send_poll(**poll_kwargs)
-                success += 1
-                await asyncio.sleep(0.04)
-            except Exception:
-                pass
+            await queue.put(u["user_id"])
+
+        async def poll_worker():
+            nonlocal success
+            while not queue.empty():
+                u_id = await queue.get()
+                try:
+                    poll_kwargs = {
+                        "chat_id": u_id,
+                        "question": question,
+                        "options": options,
+                        "is_anonymous": True,
+                        "type": "quiz" if is_quiz else "regular",
+                    }
+                    if is_quiz and correct_id is not None:
+                        poll_kwargs["correct_option_id"] = correct_id
+                    await context.bot.send_poll(**poll_kwargs)
+                    success += 1
+                    await asyncio.sleep(0.03)
+                except Exception:
+                    pass
+                finally:
+                    queue.task_done()
+
+        workers = [asyncio.create_task(poll_worker()) for _ in range(12)]
+        await queue.join()
+        for w in workers:
+            w.cancel()
 
         prefix_icon = "💡" if is_quiz else "📊"
         msg_type = "Quiz" if is_quiz else "Poll"
         await update.message.reply_text(f"{prefix_icon} {msg_type} broadcasted to {success}/{len(all_users)} Users!")
 
-# ------------------------------------------------------------------
-# Commands
-# ------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     users_collection.update_one(
@@ -648,20 +777,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 Welcome {user.first_name}!\nAapka swagat hai. Aap jo bhi message bhejenge, hamari team tak pahunch jayega."
     )
-
-async def set_prediction_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_USER_IDS:
-        return
-    admin_modes[user.id] = "channel"
-    await update.message.reply_text("📢 **Prediction Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh sirf **Channels** me instant broadcast hoga.", parse_mode="Markdown")
-
-async def set_broadcast_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in ADMIN_USER_IDS:
-        return
-    admin_modes[user.id] = "user"
-    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot ke **Users** ko private chat me jayega.", parse_mode="Markdown")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -820,13 +935,14 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error forwarding user msg to admin: {e}")
         return
 
-    # 3. ADMIN DIRECT DM MESSAGES -> CHANNELS / BROADCAST MODE
+    # 3. ADMIN DIRECT DM MESSAGES -> PREDICTION / BROADCAST MODE
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
-        all_channels = list(channels_collection.find({}))
-        if not all_channels:
-            await message.reply_text("⚠️ Kisi channel me bot Admin nahi hai!")
+        # Only send to prediction_enabled channels
+        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
+        if not active_channels:
+            await message.reply_text("⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
             return
 
         reply_mapping = None
@@ -837,9 +953,8 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_mapping = mapping_doc.get("channels", {})
 
         sent_channels = {}
-        success = 0
 
-        for ch in all_channels:
+        async def dispatch_channel(ch):
             ch_id = ch["chat_id"]
             reply_to_msg_id = reply_mapping.get(str(ch_id)) if reply_mapping else None
             try:
@@ -847,35 +962,55 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                     context.bot, ch_id, message, reply_to_channel_msg_id=reply_to_msg_id
                 )
                 if sent_msg:
-                    sent_channels[str(ch_id)] = sent_msg.message_id
-                    success += 1
+                    return str(ch_id), sent_msg.message_id
             except Exception as e:
                 logger.error(f"Failed to post in channel {ch_id}: {e}")
+            return None
+
+        results = await asyncio.gather(*(dispatch_channel(ch) for ch in active_channels))
+        for res in results:
+            if res:
+                ch_id_str, msg_id = res
+                sent_channels[ch_id_str] = msg_id
 
         if sent_channels:
             mappings_collection.insert_one({
                 "admin_msg_id": message.message_id,
-                "channels": sent_channels
+                "channels": sent_channels,
+                "created_at": datetime.now(timezone.utc)
             })
 
-        await message.reply_text(f"📢 Broadcast sent to {success}/{len(all_channels)} Channels!")
+        await message.reply_text(f"📢 Broadcast sent to {len(sent_channels)}/{len(active_channels)} Selected Channels!")
 
     else:
         all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
         success = 0
         cleaned_users = 0
+        queue = asyncio.Queue()
 
         for u in all_users:
-            u_id = u["user_id"]
-            try:
-                await send_clean_with_entities(context.bot, u_id, message)
-                success += 1
-                await asyncio.sleep(0.04)
-            except (Forbidden, BadRequest):
-                users_collection.delete_one({"user_id": u_id})
-                cleaned_users += 1
-            except Exception as e:
-                logger.error(f"User broadcast failed for {u_id}: {e}")
+            await queue.put(u["user_id"])
+
+        async def broadcast_worker():
+            nonlocal success, cleaned_users
+            while not queue.empty():
+                u_id = await queue.get()
+                try:
+                    await send_clean_with_entities(context.bot, u_id, message)
+                    success += 1
+                    await asyncio.sleep(0.03)
+                except (Forbidden, BadRequest):
+                    users_collection.delete_one({"user_id": u_id})
+                    cleaned_users += 1
+                except Exception as e:
+                    logger.error(f"User broadcast failed for {u_id}: {e}")
+                finally:
+                    queue.task_done()
+
+        workers = [asyncio.create_task(broadcast_worker()) for _ in range(15)]
+        await queue.join()
+        for w in workers:
+            w.cancel()
 
         clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
         await update.message.reply_text(f"👥 Broadcast sent to {success}/{len(all_users)} Users!{clean_msg}")
@@ -894,6 +1029,7 @@ def main():
 
     # Commands
     app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("welcome", welcome_command))
     app_bot.add_handler(CommandHandler("prediction", set_prediction_mode))
     app_bot.add_handler(CommandHandler("broadcast", set_broadcast_mode))
     app_bot.add_handler(CommandHandler("stats", stats_command))
@@ -912,7 +1048,7 @@ def main():
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
-    logger.info("🤖 VIP Poll & Quiz Broadcast Bot is running...")
+    logger.info("🤖 VIP High-Speed Prediction & Broadcast Bot is running...")
     
     app_bot.run_polling(drop_pending_updates=True)
 
