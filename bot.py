@@ -291,9 +291,37 @@ async def safe_call(coro_factory, retries: int = 3):
     return await coro_factory()
 
 # ------------------------------------------------------------------
-# PURE FORWARD ENGINE (PRESERVES ANIMATED EMOJIS FULLY)
+# CLEAN DISPATCH ENGINE (FIXED FOR TRIGGER CLEANUP & ENTITIES)
 # ------------------------------------------------------------------
-async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
+def clean_entities_for_text(text, entities):
+    if not text or not entities or "/iwantaddbutton" not in text:
+        return text, entities
+
+    trigger = "/iwantaddbutton"
+    idx = text.find(trigger)
+    if idx == -1:
+        return text, entities
+
+    trigger_len = len(trigger)
+    new_text = text.replace(trigger, "").strip()
+
+    new_entities = []
+    for e in entities:
+        if e.offset + e.length <= idx:
+            new_entities.append(e)
+        elif e.offset >= idx + trigger_len:
+            new_e = MessageEntity(
+                type=e.type,
+                offset=e.offset - trigger_len,
+                length=e.length,
+                url=e.url,
+                custom_emoji_id=e.custom_emoji_id
+            )
+            new_entities.append(new_e)
+
+    return new_text, new_entities
+
+async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None):
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
     # Poll Handling
@@ -318,20 +346,53 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send_poll)
 
-    # Agar custom button attach kiya gaya hai (/iwantaddbutton)
-    if custom_reply_markup is not None or override_text is not None or override_caption is not None:
-        async def _copy_with_markup():
-            return await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=message.chat_id,
-                message_id=message.message_id,
-                reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id,
-                reply_markup=reply_markup_to_use
-            )
-        return await safe_call(_copy_with_markup)
+    # Clean /iwantaddbutton from text/caption before sending
+    if custom_reply_markup is not None:
+        if message.text and "/iwantaddbutton" in message.text:
+            cleaned_text, cleaned_ents = clean_entities_for_text(message.text, message.entities)
+            async def _send_cleaned_txt():
+                return await bot.send_message(
+                    chat_id=chat_id,
+                    text=cleaned_text,
+                    entities=cleaned_ents,
+                    reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id,
+                    reply_markup=reply_markup_to_use,
+                    disable_web_page_preview=False
+                )
+            return await safe_call(_send_cleaned_txt)
 
-    # DEFAULT PURE FORWARD (PRESERVES ALL ANIMATED EMOJIS NATIVELY)
+        if message.caption and "/iwantaddbutton" in message.caption:
+            cleaned_caption, cleaned_ents = clean_entities_for_text(message.caption, message.caption_entities)
+            
+            if message.photo:
+                async def _send_ph():
+                    return await bot.send_photo(
+                        chat_id=chat_id, photo=message.photo[-1].file_id, caption=cleaned_caption,
+                        caption_entities=cleaned_ents, reply_to_message_id=reply_to_channel_msg_id,
+                        message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                    )
+                return await safe_call(_send_ph)
+
+            if message.video:
+                async def _send_vid():
+                    return await bot.send_video(
+                        chat_id=chat_id, video=message.video.file_id, caption=cleaned_caption,
+                        caption_entities=cleaned_ents, reply_to_message_id=reply_to_channel_msg_id,
+                        message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                    )
+                return await safe_call(_send_vid)
+
+            if message.document:
+                async def _send_doc():
+                    return await bot.send_document(
+                        chat_id=chat_id, document=message.document.file_id, caption=cleaned_caption,
+                        caption_entities=cleaned_ents, reply_to_message_id=reply_to_channel_msg_id,
+                        message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                    )
+                return await safe_call(_send_doc)
+
+    # Pure Forward Engine if no custom buttons
     async def _pure_forward():
         return await bot.forward_message(
             chat_id=chat_id,
@@ -859,7 +920,7 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ------------------------------------------------------------------
 # Execution Helper for Dynamic Button Broadcast Dispatch
 # ------------------------------------------------------------------
-async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, admin_id: int, message, custom_markup, override_text=None, override_caption=None):
+async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, admin_id: int, message, custom_markup):
     current_mode = admin_modes.get(admin_id, "channel")
 
     if current_mode == "channel":
@@ -883,7 +944,7 @@ async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, adm
             try:
                 sent_msg = await send_clean_with_entities(
                     context.bot, ch_id, message, reply_to_channel_msg_id=reply_to_msg_id,
-                    custom_reply_markup=custom_markup, override_text=override_text, override_caption=override_caption
+                    custom_reply_markup=custom_markup
                 )
                 if sent_msg:
                     return str(ch_id), sent_msg.message_id
@@ -921,8 +982,7 @@ async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, adm
                 u_id = await queue.get()
                 try:
                     await send_clean_with_entities(
-                        context.bot, u_id, message, custom_reply_markup=custom_markup,
-                        override_text=override_text, override_caption=override_caption
+                        context.bot, u_id, message, custom_reply_markup=custom_markup
                     )
                     success += 1
                     await asyncio.sleep(0.03)
@@ -966,17 +1026,8 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             parsed_btns, _ = parse_buttons_text(message.text)
             if parsed_btns:
                 custom_markup = build_inline_keyboard(parsed_btns)
-                
-                clean_text = None
-                clean_caption = None
-                if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
-                    clean_text = pending_msg.text.replace("/iwantaddbutton", "").strip()
-                elif pending_msg.caption and "/iwantaddbutton" in pending_caption:
-                    clean_caption = pending_msg.caption.replace("/iwantaddbutton", "").strip()
-
                 await dispatch_broadcast_with_markup(
-                    context, user.id, pending_msg, custom_markup,
-                    override_text=clean_text, override_caption=clean_caption
+                    context, user.id, pending_msg, custom_markup
                 )
             else:
                 await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
