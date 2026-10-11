@@ -56,7 +56,6 @@ if not TOKEN or not MONGO_URI:
 ADMIN_USER_IDS = [5785924075]
 admin_modes = {}
 admin_states = {}
-pending_broadcast_messages = {}
 
 # ------------------------------------------------------------------
 # Flask keep-alive
@@ -87,15 +86,17 @@ try:
     user_topics_collection = db["user_forum_topics"]
     settings_collection = db["welcome_settings"]
 
+    # TTL Index: 7 Days Auto Clean Mappings
     mappings_collection.create_index("created_at", expireAfterSeconds=604800)
 except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
-# EXACT MENU COMMANDS SETUP
+# EXACT MENU COMMANDS SETUP (VIA DIRECT API CALL)
 # ------------------------------------------------------------------
 async def setup_bot_commands(application):
     try:
+        # 1. Normal Users Menu (Only /start)
         user_commands = [
             BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅")
         ]
@@ -104,6 +105,7 @@ async def setup_bot_commands(application):
             scope=BotCommandScopeDefault()
         )
 
+        # 2. Admin DM Chat Menu (Exact Text Provided)
         admin_commands = [
             BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅"),
             BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
@@ -116,6 +118,7 @@ async def setup_bot_commands(application):
             BotCommand("del", "🗑 channel pe dale kishi prediction ko delete karne ke liye 🟢")
         ]
 
+        # Directly applying to Admin Private Chat
         for admin_id in ADMIN_USER_IDS:
             try:
                 await application.bot.set_my_commands(
@@ -274,6 +277,25 @@ def parse_buttons_text(raw_text):
 
     return buttons, target
 
+# ------------------------------------------------------------------
+# Entity Sanitization & Safe Call
+# ------------------------------------------------------------------
+_ALLOWED_ENTITY_TYPES = {
+    MessageEntity.MENTION, MessageEntity.HASHTAG, MessageEntity.CASHTAG,
+    MessageEntity.BOT_COMMAND, MessageEntity.URL, MessageEntity.EMAIL,
+    MessageEntity.PHONE_NUMBER, MessageEntity.BOLD, MessageEntity.ITALIC,
+    MessageEntity.UNDERLINE, MessageEntity.STRIKETHROUGH, MessageEntity.SPOILER,
+    MessageEntity.CODE, MessageEntity.PRE, MessageEntity.TEXT_LINK,
+    MessageEntity.TEXT_MENTION, MessageEntity.CUSTOM_EMOJI,
+    MessageEntity.BLOCKQUOTE, MessageEntity.EXPANDABLE_BLOCKQUOTE,
+}
+
+def sanitize_entities(entities):
+    if not entities:
+        return None
+    cleaned = [e for e in entities if e.type in _ALLOWED_ENTITY_TYPES]
+    return cleaned or None
+
 async def safe_call(coro_factory, retries: int = 3):
     for attempt in range(retries):
         try:
@@ -290,17 +312,15 @@ async def safe_call(coro_factory, retries: int = 3):
             await asyncio.sleep(2)
     return await coro_factory()
 
-# ------------------------------------------------------------------
-# DISPATCH ENGINE (DIRECT COPY + NATIVE FORWARD FALLBACK)
-# ------------------------------------------------------------------
-async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None):
-    reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
+async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None):
+    text_entities = sanitize_entities(message.entities)
+    caption_entities = sanitize_entities(message.caption_entities)
 
-    # Poll Handling
     if message.poll:
-        async def _send_poll():
+        async def _send():
             poll = message.poll
             options = [opt.text for opt in poll.options]
+            
             poll_kwargs = {
                 "chat_id": chat_id,
                 "question": poll.question,
@@ -309,37 +329,78 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
                 "type": poll.type,
                 "allows_multiple_answers": poll.allows_multiple_answers,
             }
+            
             if poll.type == "quiz":
                 if poll.correct_option_id is not None:
                     poll_kwargs["correct_option_id"] = poll.correct_option_id
                 if poll.explanation:
                     poll_kwargs["explanation"] = poll.explanation
-                    poll_kwargs["explanation_entities"] = poll.explanation_entities
+                    poll_kwargs["explanation_entities"] = sanitize_entities(poll.explanation_entities)
+                    
             return await bot.send_poll(**poll_kwargs)
-        return await safe_call(_send_poll)
+        return await safe_call(_send)
 
-    # If custom markup (buttons) present or normal message copy
-    if custom_reply_markup is not None:
-        async def _copy_with_btn():
-            return await bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=message.chat_id,
-                message_id=message.message_id,
-                reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id,
-                reply_markup=reply_markup_to_use
+    if message.text:
+        async def _send():
+            return await bot.send_message(
+                chat_id=chat_id, text=message.text, entities=text_entities,
+                reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
+                reply_markup=message.reply_markup, disable_web_page_preview=False,
             )
-        return await safe_call(_copy_with_btn)
+        return await safe_call(_send)
 
-    # Pure Forward Engine if no custom buttons
-    async def _pure_forward():
-        return await bot.forward_message(
-            chat_id=chat_id,
-            from_chat_id=message.chat_id,
-            message_id=message.message_id,
-            message_thread_id=message_thread_id
+    if message.photo:
+        async def _send():
+            return await bot.send_photo(
+                chat_id=chat_id, photo=message.photo[-1].file_id, caption=message.caption,
+                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+            )
+        return await safe_call(_send)
+
+    if message.video:
+        async def _send():
+            return await bot.send_video(
+                chat_id=chat_id, video=message.video.file_id, caption=message.caption,
+                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+            )
+        return await safe_call(_send)
+
+    if message.audio:
+        async def _send():
+            return await bot.send_audio(
+                chat_id=chat_id, audio=message.audio.file_id, caption=message.caption,
+                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+            )
+        return await safe_call(_send)
+
+    if message.voice:
+        async def _send():
+            return await bot.send_voice(
+                chat_id=chat_id, voice=message.voice.file_id, caption=message.caption,
+                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+            )
+        return await safe_call(_send)
+
+    if message.document:
+        async def _send():
+            return await bot.send_document(
+                chat_id=chat_id, document=message.document.file_id, caption=message.caption,
+                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id, reply_markup=message.reply_markup,
+            )
+        return await safe_call(_send)
+
+    async def _copy():
+        return await bot.copy_message(
+            chat_id=chat_id, from_chat_id=message.chat_id, message_id=message.message_id,
+            reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
+            reply_markup=message.reply_markup,
         )
-    return await safe_call(_pure_forward)
+    return await safe_call(_copy)
 
 # ------------------------------------------------------------------
 # Forum Topic Resolver Engine
@@ -405,6 +466,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = request.chat.id
     ch_doc = channels_collection.find_one({"chat_id": chat_id})
     
+    # Check 1: Auto-Accept Logic
     auto_accept = ch_doc.get("auto_accept_enabled", True) if ch_doc else True
     if auto_accept:
         try:
@@ -413,6 +475,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Failed to approve join request in {chat_id}: {e}")
 
+    # Check 2: Auto-Welcome Messages Logic
     if ch_doc and not ch_doc.get("welcome_enabled", True):
         logger.info(f"🚫 Auto-welcome disabled for channel {request.chat.title} ({chat_id})")
         return
@@ -427,6 +490,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         upsert=True,
     )
 
+    # 1. Video Package
     if settings.get("video_id"):
         try:
             vid_cap = settings.get("video_caption") or ""
@@ -444,6 +508,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending video to {user.id}: {e}")
 
+    # 2. APK / Document Package
     if settings.get("apk_id"):
         try:
             apk_cap = settings.get("apk_caption") or ""
@@ -461,6 +526,7 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending APK to {user.id}: {e}")
 
+    # 3. Audio / Voice Package
     if settings.get("audio_id"):
         try:
             aud_cap = settings.get("audio_caption") or ""
@@ -533,6 +599,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif query.data.startswith("set_"):
         setting_type = query.data.split("set_")[1]
         admin_states[user.id] = f"awaiting_{setting_type}"
+        
         labels = {
             "video": "🎥 Nayi Video file bhejey (With Caption & Emojis):",
             "apk": "📁 Nayi APK / Document file bhejey (With Caption & Emojis):",
@@ -567,6 +634,7 @@ async def show_join_request_channels_menu(target_obj, is_edit=False):
         "Jis channel me **Instant Auto-Accept** chahiye uspar `⚡ ON` rakhein.\n"
         "Agar **Manually Accept** karna chahte hain toh click karke `🛑 OFF` kar dein:"
     )
+    
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -592,6 +660,7 @@ async def show_welcome_channels_menu(target_obj, is_edit=False):
 
     markup = InlineKeyboardMarkup(keyboard)
     text = "⚙️ **AUTO-WELCOME CHANNEL SETTINGS**\n\nJis channel me Auto-Welcome ON rakhna hai uspar ✅ click karein, jisme OFF rakhna hai uspar ❌ click karein:"
+    
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -617,6 +686,7 @@ async def show_prediction_channels_menu(target_obj, is_edit=False):
 
     markup = InlineKeyboardMarkup(keyboard)
     text = "📢 **PREDICTION MODE CHANNEL SETTINGS**\n\nPrediction Mode Active hai! Jinn channels par message post hona chahiye wahan ✅ select rakhein:"
+
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -857,91 +927,6 @@ async def delete_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(f"🗑️ Message deleted from {deleted_count} channels!")
 
 # ------------------------------------------------------------------
-# Execution Helper for Dynamic Button Broadcast Dispatch
-# ------------------------------------------------------------------
-async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, admin_id: int, message, custom_markup):
-    current_mode = admin_modes.get(admin_id, "channel")
-
-    if current_mode == "channel":
-        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
-        if not active_channels:
-            await context.bot.send_message(chat_id=admin_id, text="⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
-            return
-
-        reply_mapping = None
-        if message.reply_to_message:
-            replied_admin_msg_id = message.reply_to_message.message_id
-            mapping_doc = mappings_collection.find_one({"admin_msg_id": replied_admin_msg_id})
-            if mapping_doc:
-                reply_mapping = mapping_doc.get("channels", {})
-
-        sent_channels = {}
-
-        async def dispatch_channel(ch):
-            ch_id = ch["chat_id"]
-            reply_to_msg_id = reply_mapping.get(str(ch_id)) if reply_mapping else None
-            try:
-                sent_msg = await send_clean_with_entities(
-                    context.bot, ch_id, message, reply_to_channel_msg_id=reply_to_msg_id,
-                    custom_reply_markup=custom_markup
-                )
-                if sent_msg:
-                    return str(ch_id), sent_msg.message_id
-            except Exception as e:
-                logger.error(f"Failed to post in channel {ch_id}: {e}")
-            return None
-
-        results = await asyncio.gather(*(dispatch_channel(ch) for ch in active_channels))
-        for res in results:
-            if res:
-                ch_id_str, msg_id = res
-                sent_channels[ch_id_str] = msg_id
-
-        if sent_channels:
-            mappings_collection.insert_one({
-                "admin_msg_id": message.message_id,
-                "channels": sent_channels,
-                "created_at": datetime.now(timezone.utc)
-            })
-
-        await context.bot.send_message(chat_id=admin_id, text=f"📢 Broadcast (With Buttons) sent to {len(sent_channels)}/{len(active_channels)} Selected Channels!")
-
-    else:
-        all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
-        success = 0
-        cleaned_users = 0
-        queue = asyncio.Queue()
-
-        for u in all_users:
-            await queue.put(u["user_id"])
-
-        async def broadcast_worker():
-            nonlocal success, cleaned_users
-            while not queue.empty():
-                u_id = await queue.get()
-                try:
-                    await send_clean_with_entities(
-                        context.bot, u_id, message, custom_reply_markup=custom_markup
-                    )
-                    success += 1
-                    await asyncio.sleep(0.03)
-                except (Forbidden, BadRequest):
-                    users_collection.delete_one({"user_id": u_id})
-                    cleaned_users += 1
-                except Exception as e:
-                    logger.error(f"User broadcast failed for {u_id}: {e}")
-                finally:
-                    queue.task_done()
-
-        workers = [asyncio.create_task(broadcast_worker()) for _ in range(15)]
-        await queue.join()
-        for w in workers:
-            w.cancel()
-
-        clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
-        await context.bot.send_message(chat_id=admin_id, text=f"👥 Broadcast (With Buttons) sent to {success}/{len(all_users)} Users!{clean_msg}")
-
-# ------------------------------------------------------------------
 # Main Message Handler Logic
 # ------------------------------------------------------------------
 async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -952,26 +937,10 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
-    # Admin Settings Inputs & Custom Button Interception
+    # Admin Settings Inputs
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
         state = admin_states.pop(user.id)
-
-        if state == "awaiting_broadcast_buttons" and message.text:
-            pending_msg = pending_broadcast_messages.pop(user.id, None)
-            if not pending_msg:
-                await message.reply_text("⚠️ Koi pending message nahi mila. Kripya fir se koshish karein.")
-                return
-
-            parsed_btns, _ = parse_buttons_text(message.text)
-            if parsed_btns:
-                custom_markup = build_inline_keyboard(parsed_btns)
-                await dispatch_broadcast_with_markup(
-                    context, user.id, pending_msg, custom_markup
-                )
-            else:
-                await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
-            return
-
+        
         if state == "awaiting_custom_buttons" and message.text:
             parsed_btns, target_media = parse_buttons_text(message.text)
             if parsed_btns:
@@ -1061,28 +1030,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error forwarding user msg to admin: {e}")
         return
 
-    # 3. ADMIN DIRECT DM MESSAGES -> CHECK FOR /iwantaddbutton TRIGGER
-    msg_has_trigger = False
-    if message.text and "/iwantaddbutton" in message.text:
-        msg_has_trigger = True
-    elif message.caption and "/iwantaddbutton" in message.caption:
-        msg_has_trigger = True
-
-    if msg_has_trigger:
-        pending_broadcast_messages[user.id] = message
-        admin_states[user.id] = "awaiting_broadcast_buttons"
-
-        instr = (
-            "🔘 **ADD CUSTOM STYLED BUTTONS FOR THIS BROADCAST/PREDICTION**\n\n"
-            "Aapka message hold kar liya gaya hai! Ab buttons ka format bhejey:\n\n"
-            "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
-            "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`\n\n"
-            "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
-        )
-        await message.reply_text(instr, parse_mode="Markdown")
-        return
-
-    # NORMAL DIRECT BROADCAST/PREDICTION FLOW
+    # 3. ADMIN DIRECT DM MESSAGES -> PREDICTION / BROADCAST MODE
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
@@ -1173,23 +1121,27 @@ def main():
 
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
+    # Commands Registration
     app_bot.add_handler(CommandHandler("start", start_command))
     app_bot.add_handler(CommandHandler("prediction", prediction_command))
     app_bot.add_handler(CommandHandler("broadcast", broadcast_command))
     app_bot.add_handler(CommandHandler("welcome", welcome_command))
     app_bot.add_handler(CommandHandler("joinrequest", joinrequest_command))
-    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
+    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command)) # Secret Custom Command
     app_bot.add_handler(CommandHandler("quiz", quiz_poll_command))
     app_bot.add_handler(CommandHandler("poll", quiz_poll_command))
     app_bot.add_handler(CommandHandler("stats", stats_command))
     app_bot.add_handler(CommandHandler("del", delete_broadcast))
 
+    # Handlers for Join Request & Callbacks
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
     app_bot.add_handler(CallbackQueryHandler(handle_callback_query))
 
+    # Core Event Handlers
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
+    # Hook to automatically apply exact Admin DM Chat Commands
     async def post_init(application):
         await setup_bot_commands(application)
 
