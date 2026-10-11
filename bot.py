@@ -291,36 +291,8 @@ async def safe_call(coro_factory, retries: int = 3):
     return await coro_factory()
 
 # ------------------------------------------------------------------
-# CLEAN DISPATCH ENGINE (FIXED FOR TRIGGER CLEANUP & ENTITIES)
+# DISPATCH ENGINE (DIRECT COPY + NATIVE FORWARD FALLBACK)
 # ------------------------------------------------------------------
-def clean_entities_for_text(text, entities):
-    if not text or not entities or "/iwantaddbutton" not in text:
-        return text, entities
-
-    trigger = "/iwantaddbutton"
-    idx = text.find(trigger)
-    if idx == -1:
-        return text, entities
-
-    trigger_len = len(trigger)
-    new_text = text.replace(trigger, "").strip()
-
-    new_entities = []
-    for e in entities:
-        if e.offset + e.length <= idx:
-            new_entities.append(e)
-        elif e.offset >= idx + trigger_len:
-            new_e = MessageEntity(
-                type=e.type,
-                offset=e.offset - trigger_len,
-                length=e.length,
-                url=e.url,
-                custom_emoji_id=e.custom_emoji_id
-            )
-            new_entities.append(new_e)
-
-    return new_text, new_entities
-
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None):
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
@@ -346,51 +318,18 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send_poll)
 
-    # Clean /iwantaddbutton from text/caption before sending
+    # If custom markup (buttons) present or normal message copy
     if custom_reply_markup is not None:
-        if message.text and "/iwantaddbutton" in message.text:
-            cleaned_text, cleaned_ents = clean_entities_for_text(message.text, message.entities)
-            async def _send_cleaned_txt():
-                return await bot.send_message(
-                    chat_id=chat_id,
-                    text=cleaned_text,
-                    entities=cleaned_ents,
-                    reply_to_message_id=reply_to_channel_msg_id,
-                    message_thread_id=message_thread_id,
-                    reply_markup=reply_markup_to_use,
-                    disable_web_page_preview=False
-                )
-            return await safe_call(_send_cleaned_txt)
-
-        if message.caption and "/iwantaddbutton" in message.caption:
-            cleaned_caption, cleaned_ents = clean_entities_for_text(message.caption, message.caption_entities)
-            
-            if message.photo:
-                async def _send_ph():
-                    return await bot.send_photo(
-                        chat_id=chat_id, photo=message.photo[-1].file_id, caption=cleaned_caption,
-                        caption_entities=cleaned_ents, reply_to_message_id=reply_to_channel_msg_id,
-                        message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
-                    )
-                return await safe_call(_send_ph)
-
-            if message.video:
-                async def _send_vid():
-                    return await bot.send_video(
-                        chat_id=chat_id, video=message.video.file_id, caption=cleaned_caption,
-                        caption_entities=cleaned_ents, reply_to_message_id=reply_to_channel_msg_id,
-                        message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
-                    )
-                return await safe_call(_send_vid)
-
-            if message.document:
-                async def _send_doc():
-                    return await bot.send_document(
-                        chat_id=chat_id, document=message.document.file_id, caption=cleaned_caption,
-                        caption_entities=cleaned_ents, reply_to_message_id=reply_to_channel_msg_id,
-                        message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
-                    )
-                return await safe_call(_send_doc)
+        async def _copy_with_btn():
+            return await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=message.chat_id,
+                message_id=message.message_id,
+                reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id,
+                reply_markup=reply_markup_to_use
+            )
+        return await safe_call(_copy_with_btn)
 
     # Pure Forward Engine if no custom buttons
     async def _pure_forward():
