@@ -86,33 +86,58 @@ try:
     users_collection = db["bot_users"]
     user_topics_collection = db["user_forum_topics"]
     settings_collection = db["welcome_settings"]
+    game_settings_collection = db["game_settings"]
 
-    # TTL Index: 7 Days Auto Clean Mappings
     mappings_collection.create_index("created_at", expireAfterSeconds=604800)
 except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
-# EXACT MENU COMMANDS SETUP (VIA DIRECT API CALL)
+# GAME SETTINGS HELPER
+# ------------------------------------------------------------------
+def get_game_settings():
+    doc = game_settings_collection.find_one({"_id": "game_config"})
+    if not doc:
+        default_config = {
+            "_id": "game_config",
+            "reg_link": "https://example.com/register",
+            "reg_audio": None,
+            "login_audio": None,
+            "deposit_audio": None
+        }
+        game_settings_collection.insert_one(default_config)
+        return default_config
+    return doc
+
+def update_game_setting(key_dict):
+    game_settings_collection.update_one(
+        {"_id": "game_config"},
+        {"$set": key_dict},
+        upsert=True
+    )
+
+# ------------------------------------------------------------------
+# EXACT MENU COMMANDS SETUP
 # ------------------------------------------------------------------
 async def setup_bot_commands(application):
     try:
-        # 1. Normal Users Menu (Only /start)
         user_commands = [
-            BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅")
+            BotCommand("start", "🚀 Start Game & Open Panel ✅"),
+            BotCommand("prediction", "🎯 Get VIP Predictions 📈"),
+            BotCommand("stats", "📊 View Bot Statistics 📉")
         ]
         await application.bot.set_my_commands(
             commands=user_commands,
             scope=BotCommandScopeDefault()
         )
 
-        # 2. Admin DM Chat Menu (Exact Text Provided)
         admin_commands = [
-            BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅"),
+            BotCommand("start", "🚀 Start Game & Open Panel ✅"),
             BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
             BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye ✅"),
             BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye ✅"),
             BotCommand("joinrequest", "📥 konse channel me join request auto accept honi chahiya konse me nahi set karne ke liye ✅"),
+            BotCommand("updategame", "⚙️ Update Game Links & Audios (Admin) 🟢"),
             BotCommand("quiz", "🧩 channel ya User's ko quiz bhejne ke liye ✅"),
             BotCommand("poll", "📊 channel ya User's ko poll bhejne ke liye ✅"),
             BotCommand("stats", "📊 View Bot Statistics dekhne ke liye ✅"),
@@ -133,7 +158,7 @@ async def setup_bot_commands(application):
         logger.error(f"❌ Error setting bot commands: {e}")
 
 # ------------------------------------------------------------------
-# STYLED BUTTON HELPER (FIXED FOR RAW PAYLOAD BUTTON EMOJI & STYLES)
+# STYLED BUTTON HELPER
 # ------------------------------------------------------------------
 def styled_button(text, *, style=None, icon_custom_emoji_id=None, url=None, callback_data=None):
     action = {"url": url} if url else {"callback_data": callback_data or "noop"}
@@ -277,15 +302,6 @@ def parse_buttons_text(raw_text):
 
     return buttons, target
 
-# ------------------------------------------------------------------
-# Entity Preservation Bypass (FIXED FOR PREMIUM ANIMATED EMOJIS)
-# ------------------------------------------------------------------
-def preserve_all_entities(entities):
-    """Bypasses restriction filters to pass raw custom/animated emoji entities directly"""
-    if not entities:
-        return None
-    return list(entities)
-
 async def safe_call(coro_factory, retries: int = 3):
     for attempt in range(retries):
         try:
@@ -302,16 +318,16 @@ async def safe_call(coro_factory, retries: int = 3):
             await asyncio.sleep(2)
     return await coro_factory()
 
+# ------------------------------------------------------------------
+# RAW NATIVE ENGINE (PRESERVES ANIMATED CUSTOM EMOJIS FULLY)
+# ------------------------------------------------------------------
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
-    text_entities = preserve_all_entities(message.entities)
-    caption_entities = preserve_all_entities(message.caption_entities)
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
     if message.poll:
-        async def _send():
+        async def _send_poll():
             poll = message.poll
             options = [opt.text for opt in poll.options]
-            
             poll_kwargs = {
                 "chat_id": chat_id,
                 "question": poll.question,
@@ -320,78 +336,62 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
                 "type": poll.type,
                 "allows_multiple_answers": poll.allows_multiple_answers,
             }
-            
             if poll.type == "quiz":
                 if poll.correct_option_id is not None:
                     poll_kwargs["correct_option_id"] = poll.correct_option_id
                 if poll.explanation:
                     poll_kwargs["explanation"] = poll.explanation
-                    poll_kwargs["explanation_entities"] = preserve_all_entities(poll.explanation_entities)
-                    
+                    poll_kwargs["explanation_entities"] = poll.explanation_entities
             return await bot.send_poll(**poll_kwargs)
-        return await safe_call(_send)
+        return await safe_call(_send_poll)
 
-    if message.text:
-        async def _send():
-            return await bot.send_message(
-                chat_id=chat_id, text=override_text if override_text is not None else message.text, entities=text_entities,
-                reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-                reply_markup=reply_markup_to_use, disable_web_page_preview=False,
-            )
-        return await safe_call(_send)
+    if override_text is not None or override_caption is not None:
+        if message.text:
+            async def _send_txt():
+                return await bot.send_message(
+                    chat_id=chat_id, text=override_text, entities=message.entities,
+                    reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
+                    reply_markup=reply_markup_to_use, disable_web_page_preview=False
+                )
+            return await safe_call(_send_txt)
 
-    if message.photo:
-        async def _send():
-            return await bot.send_photo(
-                chat_id=chat_id, photo=message.photo[-1].file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
+        if message.photo:
+            async def _send_ph():
+                return await bot.send_photo(
+                    chat_id=chat_id, photo=message.photo[-1].file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_ph)
 
-    if message.video:
-        async def _send():
-            return await bot.send_video(
-                chat_id=chat_id, video=message.video.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
+        if message.video:
+            async def _send_vid():
+                return await bot.send_video(
+                    chat_id=chat_id, video=message.video.file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_vid)
 
-    if message.audio:
-        async def _send():
-            return await bot.send_audio(
-                chat_id=chat_id, audio=message.audio.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
+        if message.document:
+            async def _send_doc():
+                return await bot.send_document(
+                    chat_id=chat_id, document=message.document.file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_doc)
 
-    if message.voice:
-        async def _send():
-            return await bot.send_voice(
-                chat_id=chat_id, voice=message.voice.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
-
-    if message.document:
-        async def _send():
-            return await bot.send_document(
-                chat_id=chat_id, document=message.document.file_id, caption=override_caption if override_caption is not None else message.caption,
-                caption_entities=caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                message_thread_id=message_thread_id, reply_markup=reply_markup_to_use,
-            )
-        return await safe_call(_send)
-
-    async def _copy():
+    async def _native_copy():
         return await bot.copy_message(
-            chat_id=chat_id, from_chat_id=message.chat_id, message_id=message.message_id,
-            reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-            reply_markup=reply_markup_to_use,
+            chat_id=chat_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id,
+            reply_to_message_id=reply_to_channel_msg_id,
+            message_thread_id=message_thread_id,
+            reply_markup=reply_markup_to_use
         )
-    return await safe_call(_copy)
+    return await safe_call(_native_copy)
 
 # ------------------------------------------------------------------
 # Forum Topic Resolver Engine
@@ -479,7 +479,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         upsert=True,
     )
 
-    # 1. Video Package
     if settings.get("video_id"):
         try:
             vid_cap = settings.get("video_caption") or ""
@@ -497,7 +496,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending video to {user.id}: {e}")
 
-    # 2. APK Package
     if settings.get("apk_id"):
         try:
             apk_cap = settings.get("apk_caption") or ""
@@ -515,7 +513,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error sending APK to {user.id}: {e}")
 
-    # 3. Audio Package
     if settings.get("audio_id"):
         try:
             aud_cap = settings.get("audio_caption") or ""
@@ -543,6 +540,66 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     user = query.from_user
     await query.answer()
 
+    # --- GAME FLOW CALLBACKS (For all users) ---
+    game_settings = get_game_settings()
+    user_record = users_collection.find_one({"user_id": user.id})
+
+    if query.data == "check_login":
+        if user_record and user_record.get("registered"):
+            deposit_status = user_record.get("deposited", False)
+            status_text = "🟢 Active & Logged In" if deposit_status else "🔒 Locked (Deposit Required)"
+            
+            kb = [
+                [InlineKeyboardButton("💰 Deposit & Unlock Panel", callback_data="make_deposit")],
+                [InlineKeyboardButton("🚀 Open Auto Play Panel", callback_data="open_panel")]
+            ]
+            await query.message.reply_text(
+                f"✅ **Login Successful!**\nAccount Status: {status_text}\n\n"
+                f"Made by @Vkaddagency Auto Panel:",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode="Markdown"
+            )
+        else:
+            login_audio = game_settings.get("login_audio")
+            if login_audio:
+                try:
+                    await query.message.reply_audio(audio=login_audio)
+                except Exception as e:
+                    logger.error(f"Error sending login audio: {e}")
+            await query.message.reply_text("❌ **Register First!**\nBina registration ke aap log in nahi kar sakte. Kripya pehle di gayi link se register karke apna number bhejiye.")
+        return
+
+    elif query.data == "check_deposit" or query.data == "make_deposit":
+        if not user_record or not user_record.get("registered"):
+            await query.message.reply_text("❌ Pehle register karke apna number verify karein!")
+            return
+        
+        users_collection.update_one({"user_id": user.id}, {"$set": {"deposited": True}}, upsert=True)
+        
+        deposit_audio = game_settings.get("deposit_audio")
+        if deposit_audio:
+            try:
+                await query.message.reply_audio(audio=deposit_audio)
+            except Exception as e:
+                logger.error(f"Error sending deposit audio: {e}")
+                
+        await query.message.reply_text("🎉 **Deposit Successful!**\nAb aapka auto-play panel activate ho chuka hai. Aap ab 'Open Auto Play Panel' use kar sakte hain 🚀")
+        return
+
+    elif query.data == "open_panel":
+        if not user_record or not user_record.get("deposited"):
+            deposit_audio = game_settings.get("deposit_audio")
+            if deposit_audio:
+                try:
+                    await query.message.reply_audio(audio=deposit_audio)
+                except Exception as e:
+                    logger.error(f"Error sending deposit audio: {e}")
+            await query.message.reply_text("⚠️ **Deposit First!**\nJab tak aap deposit nahi karenge, panel active nahi hoga.")
+        else:
+            await query.message.reply_text("⚡ **Made by @Vkaddagency Auto Play Panel Active!**\n( Dashboard is running smoothly just like video )")
+        return
+
+    # --- ADMIN CALLBACKS ---
     if user.id not in ADMIN_USER_IDS:
         return
 
@@ -588,7 +645,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif query.data.startswith("set_"):
         setting_type = query.data.split("set_")[1]
         admin_states[user.id] = f"awaiting_{setting_type}"
-        
         labels = {
             "video": "🎥 Nayi Video file bhejey (With Caption & Emojis):",
             "apk": "📁 Nayi APK / Document file bhejey (With Caption & Emojis):",
@@ -623,7 +679,6 @@ async def show_join_request_channels_menu(target_obj, is_edit=False):
         "Jis channel me **Instant Auto-Accept** chahiye uspar `⚡ ON` rakhein.\n"
         "Agar **Manually Accept** karna chahte hain toh click karke `🛑 OFF` kar dein:"
     )
-    
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -649,7 +704,6 @@ async def show_welcome_channels_menu(target_obj, is_edit=False):
 
     markup = InlineKeyboardMarkup(keyboard)
     text = "⚙️ **AUTO-WELCOME CHANNEL SETTINGS**\n\nJis channel me Auto-Welcome ON rakhna hai uspar ✅ click karein, jisme OFF rakhna hai uspar ❌ click karein:"
-    
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -675,7 +729,6 @@ async def show_prediction_channels_menu(target_obj, is_edit=False):
 
     markup = InlineKeyboardMarkup(keyboard)
     text = "📢 **PREDICTION MODE CHANNEL SETTINGS**\n\nPrediction Mode Active hai! Jinn channels par message post hona chahiye wahan ✅ select rakhein:"
-
     if is_edit:
         await target_obj.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -691,9 +744,39 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
         upsert=True,
     )
-    await update.message.reply_text(
-        f"👋 Welcome {user.first_name}!\nAapka swagat hai. Aap jo bhi message bhejenge, hamari team tak pahunch jayega."
+    
+    game_settings = get_game_settings()
+    reg_link = game_settings.get("reg_link", "https://example.com")
+    reg_audio = game_settings.get("reg_audio")
+
+    if reg_audio:
+        try:
+            await update.message.reply_audio(audio=reg_audio)
+        except Exception as e:
+            logger.error(f"Failed to send registration audio: {e}")
+
+    keyboard = [
+        [InlineKeyboardButton("🎮 Start Game (Register)", url=reg_link)],
+        [InlineKeyboardButton("🔐 Login / Check Account", callback_data="check_login")],
+        [InlineKeyboardButton("💰 Deposit & Unlock Panel", callback_data="check_deposit")]
+    ]
+    markup = InlineKeyboardMarkup(keyboard)
+
+    welcome_text = (
+        f"👋 Welcome **{user.first_name}** to **Made by @Vkaddagency** Gaming Hub!\n\n"
+        f"1️⃣ Upar diye gaye button se game mein register karein.\n"
+        f"2️⃣ Registration ke baad apna registered number yahan bhej kar verify karein, phir 'Login' dabayein."
     )
+    await update.message.reply_text(welcome_text, reply_markup=markup, parse_mode="Markdown")
+
+async def update_game_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        await update.message.reply_text("⚠️ You are not authorized.")
+        return
+
+    admin_states[user.id] = "waiting_for_game_link"
+    await update.message.reply_text("⚙️ Step 1/4: Kripya naya **Registration Link** bhejiye:")
 
 async def prediction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -707,7 +790,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_USER_IDS:
         return
     admin_modes[user.id] = "user"
-    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot के **Users** ko private chat me jayega.", parse_mode="Markdown")
+    await update.message.reply_text("👥 **User Broadcast Mode Active!**\n\nAb aap jo bhi message DM me bhejenge, woh **Channels me nahi jayega**, sirf Bot के **Users** को private chat me jayega.", parse_mode="Markdown")
 
 async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1012,6 +1095,52 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
+    # --- ADMIN GAME SETUP WIZARD (/updategame) ---
+    if user.id in ADMIN_USER_IDS and user.id in admin_states:
+        state = admin_states[user.id]
+
+        if state == "waiting_for_game_link":
+            update_game_setting({"reg_link": message.text.strip()})
+            admin_states[user.id] = "waiting_for_reg_audio"
+            await message.reply_text("✅ Link saved!\n\n⚙️ Step 2/4: Ab **Registration Audio** file ya voice note bhejiye:")
+            return
+
+        elif state == "waiting_for_reg_audio":
+            audio_id = message.audio.file_id if message.audio else (message.voice.file_id if message.voice else None)
+            if audio_id:
+                update_game_setting({"reg_audio": audio_id})
+            admin_states[user.id] = "waiting_for_login_audio"
+            await message.reply_text("✅ Registration Audio saved!\n\n⚙️ Step 3/4: Ab **Login Bypass Audio** file bhejiye:")
+            return
+
+        elif state == "waiting_for_login_audio":
+            audio_id = message.audio.file_id if message.audio else (message.voice.file_id if message.voice else None)
+            if audio_id:
+                update_game_setting({"login_audio": audio_id})
+            admin_states[user.id] = "waiting_for_deposit_audio"
+            await message.reply_text("✅ Login Audio saved!\n\n⚙️ Step 4/4: Ab **Deposit Audio** file bhejiye:")
+            return
+
+        elif state == "waiting_for_deposit_audio":
+            audio_id = message.audio.file_id if message.audio else (message.voice.file_id if message.voice else None)
+            if audio_id:
+                update_game_setting({"deposit_audio": audio_id})
+            admin_states.pop(user.id, None)
+            await message.reply_text("✅ **All game settings updated successfully for Made by @Vkaddagency!** 🎉")
+            return
+
+    # --- USER NUMBER REGISTRATION VERIFICATION (For Game Flow) ---
+    if user.id not in ADMIN_USER_IDS and chat.id != ADMIN_GROUP_ID:
+        if message.contact or (message.text and len(message.text.strip()) >= 10 and message.text.strip().isdigit()):
+            phone = message.contact.phone_number if message.contact else message.text.strip()
+            users_collection.update_one(
+                {"user_id": user.id},
+                {"$set": {"registered": True, "phone": phone}},
+                upsert=True
+            )
+            await message.reply_text(f"✅ Aapka number `{phone}` database me register & verify ho chuka hai! Ab aap 'Login / Check Account' button par click karke aage badh sakte hain.")
+            return
+
     # Admin Settings Inputs & Custom Button Interception
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
         state = admin_states.pop(user.id)
@@ -1228,7 +1357,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             w.cancel()
 
         clean_msg = f" 🗑️ ({cleaned_users} Inactive users cleaned)" if cleaned_users > 0 else ""
-        await update.message.reply_text(f"👥 Broadcast sent to {success}/{len(all_users)} Users!{clean_msg}")
+        await message.reply_text(f"👥 Broadcast sent to {success}/{len(all_users)} Users!{clean_msg}")
 
 # ------------------------------------------------------------------
 # Main Entry Point
@@ -1242,23 +1371,21 @@ def main():
 
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
-    # Commands Registration
     app_bot.add_handler(CommandHandler("start", start_command))
     app_bot.add_handler(CommandHandler("prediction", prediction_command))
     app_bot.add_handler(CommandHandler("broadcast", broadcast_command))
     app_bot.add_handler(CommandHandler("welcome", welcome_command))
     app_bot.add_handler(CommandHandler("joinrequest", joinrequest_command))
-    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command)) # Secret Custom Command
+    app_bot.add_handler(CommandHandler("updatejoinrequest", update_join_request_command))
+    app_bot.add_handler(CommandHandler("updategame", update_game_command))
     app_bot.add_handler(CommandHandler("quiz", quiz_poll_command))
     app_bot.add_handler(CommandHandler("poll", quiz_poll_command))
     app_bot.add_handler(CommandHandler("stats", stats_command))
     app_bot.add_handler(CommandHandler("del", delete_broadcast))
 
-    # Handlers for Join Request & Callbacks
     app_bot.add_handler(ChatJoinRequestHandler(handle_join_request))
     app_bot.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    # Core Event Handlers
     app_bot.add_handler(ChatMemberHandler(track_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app_bot.add_handler(MessageHandler((filters.ALL | filters.POLL) & ~filters.COMMAND, handle_all_messages))
 
