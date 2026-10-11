@@ -291,7 +291,7 @@ async def safe_call(coro_factory, retries: int = 3):
     return await coro_factory()
 
 # ------------------------------------------------------------------
-# RAW NATIVE ENGINE (PRESERVES ANIMATED CUSTOM EMOJIS FULLY)
+# PURE FORWARD ENGINE (PRESERVES ANIMATED EMOJIS FULLY)
 # ------------------------------------------------------------------
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
@@ -318,55 +318,28 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send_poll)
 
-    # Overridden text or caption (from /iwantaddbutton)
-    if override_text is not None or override_caption is not None:
-        if message.text:
-            async def _send_txt():
-                return await bot.send_message(
-                    chat_id=chat_id, text=override_text, entities=message.entities,
-                    reply_to_message_id=reply_to_channel_msg_id, message_thread_id=message_thread_id,
-                    reply_markup=reply_markup_to_use, disable_web_page_preview=False
-                )
-            return await safe_call(_send_txt)
+    # Agar custom button attach kiya gaya hai (/iwantaddbutton)
+    if custom_reply_markup is not None or override_text is not None or override_caption is not None:
+        async def _copy_with_markup():
+            return await bot.copy_message(
+                chat_id=chat_id,
+                from_chat_id=message.chat_id,
+                message_id=message.message_id,
+                reply_to_message_id=reply_to_channel_msg_id,
+                message_thread_id=message_thread_id,
+                reply_markup=reply_markup_to_use
+            )
+        return await safe_call(_copy_with_markup)
 
-        if message.photo:
-            async def _send_ph():
-                return await bot.send_photo(
-                    chat_id=chat_id, photo=message.photo[-1].file_id, caption=override_caption,
-                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
-                )
-            return await safe_call(_send_ph)
-
-        if message.video:
-            async def _send_vid():
-                return await bot.send_video(
-                    chat_id=chat_id, video=message.video.file_id, caption=override_caption,
-                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
-                )
-            return await safe_call(_send_vid)
-
-        if message.document:
-            async def _send_doc():
-                return await bot.send_document(
-                    chat_id=chat_id, document=message.document.file_id, caption=override_caption,
-                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
-                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
-                )
-            return await safe_call(_send_doc)
-
-    # DEFAULT NATIVE DIRECT COPY (Preserves Animated Emoji Entities Directly at Server Level)
-    async def _native_copy():
-        return await bot.copy_message(
+    # DEFAULT PURE FORWARD (PRESERVES ALL ANIMATED EMOJIS NATIVELY)
+    async def _pure_forward():
+        return await bot.forward_message(
             chat_id=chat_id,
             from_chat_id=message.chat_id,
             message_id=message.message_id,
-            reply_to_message_id=reply_to_channel_msg_id,
-            message_thread_id=message_thread_id,
-            reply_markup=reply_markup_to_use
+            message_thread_id=message_thread_id
         )
-    return await safe_call(_native_copy)
+    return await safe_call(_pure_forward)
 
 # ------------------------------------------------------------------
 # Forum Topic Resolver Engine
@@ -998,7 +971,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 clean_caption = None
                 if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
                     clean_text = pending_msg.text.replace("/iwantaddbutton", "").strip()
-                elif pending_msg.caption and "/iwantaddbutton" in pending_msg.caption:
+                elif pending_msg.caption and "/iwantaddbutton" in pending_caption:
                     clean_caption = pending_msg.caption.replace("/iwantaddbutton", "").strip()
 
                 await dispatch_broadcast_with_markup(
