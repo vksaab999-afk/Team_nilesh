@@ -92,6 +92,26 @@ except Exception as e:
     logger.error(f"Mongo Connection Error: {e}")
 
 # ------------------------------------------------------------------
+# HELPER: Get Live Active Admin Channels Only (Removes Left/Kicked)
+# ------------------------------------------------------------------
+async def get_live_active_channels(bot):
+    all_channels = list(channels_collection.find({}))
+    valid_channels = []
+
+    for ch in all_channels:
+        ch_id = ch["chat_id"]
+        try:
+            member = await bot.get_chat_member(chat_id=ch_id, user_id=bot.id)
+            if member.status in ("administrator", "creator"):
+                valid_channels.append(ch)
+            else:
+                channels_collection.delete_one({"chat_id": ch_id})
+        except Exception:
+            channels_collection.delete_one({"chat_id": ch_id})
+
+    return valid_channels
+
+# ------------------------------------------------------------------
 # EXACT MENU COMMANDS SETUP
 # ------------------------------------------------------------------
 async def setup_bot_commands(application):
@@ -524,7 +544,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if ch:
             current_st = ch.get("auto_accept_enabled", True)
             channels_collection.update_one({"chat_id": ch_id}, {"$set": {"auto_accept_enabled": not current_st}})
-            await show_join_request_channels_menu(query, is_edit=True)
+            await show_join_request_channels_menu(query, context, is_edit=True)
         return
 
     if query.data.startswith("toggle_wel_"):
@@ -533,7 +553,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if ch:
             current_st = ch.get("welcome_enabled", True)
             channels_collection.update_one({"chat_id": ch_id}, {"$set": {"welcome_enabled": not current_st}})
-            await show_welcome_channels_menu(query, is_edit=True)
+            await show_welcome_channels_menu(query, context, is_edit=True)
         return
 
     if query.data.startswith("toggle_pred_"):
@@ -542,7 +562,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         if ch:
             current_st = ch.get("prediction_enabled", True)
             channels_collection.update_one({"chat_id": ch_id}, {"$set": {"prediction_enabled": not current_st}})
-            await show_prediction_channels_menu(query, is_edit=True)
+            await show_prediction_channels_menu(query, context, is_edit=True)
         return
 
     if query.data == "set_custom_buttons":
@@ -570,8 +590,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 # ------------------------------------------------------------------
 # Interactive Channel Selectors Helper Functions
 # ------------------------------------------------------------------
-async def show_join_request_channels_menu(target_obj, is_edit=False):
-    all_channels = list(channels_collection.find({}))
+async def show_join_request_channels_menu(target_obj, context, is_edit=False):
+    all_channels = await get_live_active_channels(context.bot)
     if not all_channels:
         msg = "⚠️ Kisi channel me bot Admin nahi hai!"
         if is_edit:
@@ -599,8 +619,8 @@ async def show_join_request_channels_menu(target_obj, is_edit=False):
     else:
         await target_obj.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
 
-async def show_welcome_channels_menu(target_obj, is_edit=False):
-    all_channels = list(channels_collection.find({}))
+async def show_welcome_channels_menu(target_obj, context, is_edit=False):
+    all_channels = await get_live_active_channels(context.bot)
     if not all_channels:
         msg = "⚠️ Kisi channel me bot Admin nahi hai!"
         if is_edit:
@@ -624,8 +644,8 @@ async def show_welcome_channels_menu(target_obj, is_edit=False):
     else:
         await target_obj.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
 
-async def show_prediction_channels_menu(target_obj, is_edit=False):
-    all_channels = list(channels_collection.find({}))
+async def show_prediction_channels_menu(target_obj, context, is_edit=False):
+    all_channels = await get_live_active_channels(context.bot)
     if not all_channels:
         msg = "⚠️ Kisi channel me bot Admin nahi hai!"
         if is_edit:
@@ -668,7 +688,7 @@ async def prediction_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user.id not in ADMIN_USER_IDS:
         return
     admin_modes[user.id] = "channel"
-    await show_prediction_channels_menu(update)
+    await show_prediction_channels_menu(update, context)
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -681,13 +701,13 @@ async def welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
         return
-    await show_welcome_channels_menu(update)
+    await show_welcome_channels_menu(update, context)
 
 async def joinrequest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_USER_IDS:
         return
-    await show_join_request_channels_menu(update)
+    await show_join_request_channels_menu(update, context)
 
 async def update_join_request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -762,7 +782,7 @@ async def quiz_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
-        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
+        active_channels = [ch for ch in (await get_live_active_channels(context.bot)) if ch.get("prediction_enabled", True) != False]
         if not active_channels:
             await update.message.reply_text("⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
             return
@@ -782,6 +802,7 @@ async def quiz_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_poll(**poll_kwargs)
                 return True
             except Exception:
+                channels_collection.delete_one({"chat_id": ch_id})
                 return False
 
         results = await asyncio.gather(*(send_to_ch(ch) for ch in active_channels))
@@ -836,7 +857,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     total_users = users_collection.count_documents({"user_id": {"$nin": ADMIN_USER_IDS}})
-    total_channels = channels_collection.count_documents({})
+    live_channels = await get_live_active_channels(context.bot)
+    total_channels = len(live_channels)
     current_mode = admin_modes.get(user.id, "channel")
 
     mode_str = "📢 Prediction Mode (Channels)" if current_mode == "channel" else "👥 Broadcast Mode (Users)"
@@ -890,7 +912,7 @@ async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, adm
     current_mode = admin_modes.get(admin_id, "channel")
 
     if current_mode == "channel":
-        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
+        active_channels = [ch for ch in (await get_live_active_channels(context.bot)) if ch.get("prediction_enabled", True) != False]
         if not active_channels:
             await context.bot.send_message(chat_id=admin_id, text="⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
             return
@@ -916,6 +938,7 @@ async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, adm
                     return str(ch_id), sent_msg.message_id
             except Exception as e:
                 logger.error(f"Failed to post in channel {ch_id}: {e}")
+                channels_collection.delete_one({"chat_id": ch_id})
             return None
 
         results = await asyncio.gather(*(dispatch_channel(ch) for ch in active_channels))
@@ -1123,7 +1146,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     current_mode = admin_modes.get(user.id, "channel")
 
     if current_mode == "channel":
-        active_channels = list(channels_collection.find({"prediction_enabled": {"$ne": False}}))
+        active_channels = [ch for ch in (await get_live_active_channels(context.bot)) if ch.get("prediction_enabled", True) != False]
         if not active_channels:
             await message.reply_text("⚠️ Koi bhi channel Prediction ke liye selected nahi hai!")
             return
@@ -1148,6 +1171,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                     return str(ch_id), sent_msg.message_id
             except Exception as e:
                 logger.error(f"Failed to post in channel {ch_id}: {e}")
+                channels_collection.delete_one({"chat_id": ch_id})
             return None
 
         results = await asyncio.gather(*(dispatch_channel(ch) for ch in active_channels))
