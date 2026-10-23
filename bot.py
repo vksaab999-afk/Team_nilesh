@@ -389,7 +389,7 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
     return await safe_call(_native_copy)
 
 # ------------------------------------------------------------------
-# Forum Topic Resolver Engine
+# Forum Topic Resolver Engine (Pins First Profile Message Automatically)
 # ------------------------------------------------------------------
 async def get_or_create_user_topic(bot, user) -> int:
     doc = user_topics_collection.find_one({"user_id": user.id})
@@ -411,6 +411,38 @@ async def get_or_create_user_topic(bot, user) -> int:
             {"$set": {"user_id": user.id}},
             upsert=True
         )
+
+        # Send Profile Info & Direct Chat Button ONLY ONCE on topic creation and Auto-Pin it
+        username_str = f"@{user.username}" if user.username else "No Username"
+        profile_card = (
+            f"👤 **USER PROFILE INFO**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"▫️ **Name:** {user.first_name}\n"
+            f"▫️ **Username:** {username_str}\n"
+            f"▫️ **User ID:** `{user.id}`\n"
+            f"━━━━━━━━━━━━━━━━━━"
+        )
+        contact_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"👤 {user.first_name} (Direct Chat)", url=f"tg://user?id={user.id}")]
+        ])
+        
+        try:
+            pinned_msg = await bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                message_thread_id=thread_id,
+                text=profile_card,
+                reply_markup=contact_markup,
+                parse_mode="Markdown"
+            )
+            # Auto-Pin message at top of thread
+            await bot.pin_chat_message(
+                chat_id=ADMIN_GROUP_ID,
+                message_id=pinned_msg.message_id,
+                disable_notification=True
+            )
+        except Exception as err:
+            logger.error(f"Error pinning top profile card: {err}")
+
         return thread_id
     except Exception as e:
         logger.error(f"❌ Failed to create forum topic for user {user.id}: {e}")
@@ -1000,6 +1032,14 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message:
         return
 
+    # Auto-clean system pin notification if generated
+    if message.pinned_message and message.chat.id == ADMIN_GROUP_ID:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return
+
     user = update.effective_user
     chat = update.effective_chat
 
@@ -1088,7 +1128,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error replying to user {target_user_id} from Forum: {e}")
         return
 
-    # 2. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC WITH CONTACT BUTTON
+    # 2. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC (CLEAN WITHOUT PER-MSG BUTTON)
     if user.id not in ADMIN_USER_IDS:
         users_collection.update_one(
             {"user_id": user.id},
@@ -1096,17 +1136,12 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             upsert=True,
         )
 
-        # Create Profile/Direct Chat Inline Button
-        contact_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"👤 {user.first_name} (Direct Chat)", url=f"tg://user?id={user.id}")]
-        ])
-
         if ADMIN_GROUP_ID != 0:
             thread_id = await get_or_create_user_topic(context.bot, user)
             if thread_id:
                 try:
                     await send_clean_with_entities(
-                        context.bot, chat_id=ADMIN_GROUP_ID, message=message, message_thread_id=thread_id, custom_reply_markup=contact_markup
+                        context.bot, chat_id=ADMIN_GROUP_ID, message=message, message_thread_id=thread_id
                     )
                     return
                 except Exception as e:
@@ -1118,10 +1153,10 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         for admin_id in ADMIN_USER_IDS:
             try:
                 if message.text:
-                    await context.bot.send_message(chat_id=admin_id, text=caption_info + message.text, reply_markup=contact_markup, parse_mode="Markdown")
+                    await context.bot.send_message(chat_id=admin_id, text=caption_info + message.text, parse_mode="Markdown")
                 else:
                     copied_msg = await context.bot.copy_message(chat_id=admin_id, from_chat_id=message.chat_id, message_id=message.message_id)
-                    await context.bot.send_message(chat_id=admin_id, text=caption_info, reply_to_message_id=copied_msg.message_id, reply_markup=contact_markup, parse_mode="Markdown")
+                    await context.bot.send_message(chat_id=admin_id, text=caption_info, reply_to_message_id=copied_msg.message_id, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Error forwarding user msg to admin: {e}")
         return
