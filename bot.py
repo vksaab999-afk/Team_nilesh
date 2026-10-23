@@ -434,14 +434,14 @@ async def get_or_create_user_topic(bot, user) -> int:
                 reply_markup=contact_markup,
                 parse_mode="Markdown"
             )
-            # Auto-Pin message at top of thread
+            # Auto-Pin message at top of thread safely
             await bot.pin_chat_message(
                 chat_id=ADMIN_GROUP_ID,
                 message_id=pinned_msg.message_id,
                 disable_notification=True
             )
         except Exception as err:
-            logger.error(f"Error pinning top profile card: {err}")
+            logger.error(f"❌ Error pinning top profile card (Check 'Pin Messages' admin right in group): {err}")
 
         return thread_id
     except Exception as e:
@@ -1061,7 +1061,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 clean_caption = None
                 if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
                     clean_text = pending_msg.text.replace("/iwantaddbutton", "").strip()
-                elif pending_msg.caption and "/iwantaddbutton" in pending_msg.caption:
+                elif pending_msg.caption and "/iwantaddbutton" in pending_caption:
                     clean_caption = pending_msg.caption.replace("/iwantaddbutton", "").strip()
 
                 await dispatch_broadcast_with_markup(
