@@ -712,7 +712,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         upsert=True,
     )
     await update.message.reply_text(
-        f"👋 Welcome {user.first_name}!\nAapka swagat hai. Aap jo bhi message bhejenge, hamari team tak pahunch jayega."
+        f"👋 Welcome {user.first_name}!\nAapka swagat hai. Batao dear kitna loss hai aapka abhi m online hi hu personally play karwa ke pura recover karwa dunga"
     )
 
 async def prediction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
