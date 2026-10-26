@@ -1061,7 +1061,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 clean_caption = None
                 if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
                     clean_text = pending_msg.text.replace("/iwantaddbutton", "").strip()
-                elif pending_msg.caption and "/iwantaddbutton" in pending_caption:
+                elif pending_msg.caption and "/iwantaddbutton" in pending_msg.caption:
                     clean_caption = pending_msg.caption.replace("/iwantaddbutton", "").strip()
 
                 await dispatch_broadcast_with_markup(
@@ -1128,7 +1128,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error replying to user {target_user_id} from Forum: {e}")
         return
 
-    # 2. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC (CLEAN WITHOUT PER-MSG BUTTON)
+    # 2. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC WITH USER IDENTITY HEADER
     if user.id not in ADMIN_USER_IDS:
         users_collection.update_one(
             {"user_id": user.id},
@@ -1140,9 +1140,29 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             thread_id = await get_or_create_user_topic(context.bot, user)
             if thread_id:
                 try:
-                    await send_clean_with_entities(
-                        context.bot, chat_id=ADMIN_GROUP_ID, message=message, message_thread_id=thread_id
-                    )
+                    username_tag = f"@{user.username}" if user.username else f"ID: {user.id}"
+                    header_text = f"👤 **{user.first_name}** ({username_tag}):\n"
+
+                    if message.text:
+                        full_msg_text = header_text + message.text
+                        await context.bot.send_message(
+                            chat_id=ADMIN_GROUP_ID,
+                            message_thread_id=thread_id,
+                            text=full_msg_text,
+                            entities=message.entities,
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        # For media/photos/videos, send identity text first, then copy the media cleanly below it
+                        await context.bot.send_message(
+                            chat_id=ADMIN_GROUP_ID,
+                            message_thread_id=thread_id,
+                            text=header_text,
+                            parse_mode="Markdown"
+                        )
+                        await send_clean_with_entities(
+                            context.bot, chat_id=ADMIN_GROUP_ID, message=message, message_thread_id=thread_id
+                        )
                     return
                 except Exception as e:
                     logger.error(f"❌ Could not forward msg to thread {thread_id}: {e}")
