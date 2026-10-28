@@ -396,20 +396,31 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
         )
     return await safe_call(_native_copy)
 
-# Helper function to forward album / media groups intact
+# Universal helper function to send album / media groups intact
 async def send_media_group_intact(bot, target_chat_id, messages_list, message_thread_id=None):
     media_items = []
     for msg in messages_list:
-        caption = msg.caption or None
-        entities = msg.caption_entities or None
-        if msg.photo:
-            media_items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption, caption_entities=entities))
-        elif msg.video:
-            media_items.append(InputMediaVideo(media=msg.video.file_id, caption=caption, caption_entities=entities))
-        elif msg.document:
-            media_items.append(InputMediaDocument(media=msg.document.file_id, caption=caption, caption_entities=entities))
-        elif msg.audio:
-            media_items.append(InputMediaAudio(media=msg.audio.file_id, caption=caption, caption_entities=entities))
+        caption = msg.get("caption") if isinstance(msg, dict) else (msg.caption or None)
+        entities = deserialize_entities(msg.get("entities")) if isinstance(msg, dict) else (msg.caption_entities or None)
+        
+        if isinstance(msg, dict):
+            file_id = msg.get("file_id")
+            m_type = msg.get("type")
+        else:
+            file_id = msg.photo[-1].file_id if msg.photo else (msg.video.file_id if msg.video else (msg.document.file_id if msg.document else None))
+            m_type = "photo" if msg.photo else ("video" if msg.video else ("document" if msg.document else "audio"))
+
+        if not file_id:
+            continue
+
+        if m_type == "photo":
+            media_items.append(InputMediaPhoto(media=file_id, caption=caption, caption_entities=entities))
+        elif m_type == "video":
+            media_items.append(InputMediaVideo(media=file_id, caption=caption, caption_entities=entities))
+        elif m_type == "document":
+            media_items.append(InputMediaDocument(media=file_id, caption=caption, caption_entities=entities))
+        elif m_type == "audio":
+            media_items.append(InputMediaAudio(media=file_id, caption=caption, caption_entities=entities))
 
     if media_items:
         async def _send_group():
@@ -747,32 +758,36 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     custom_msgs = settings.get("custom_start_msgs", [])
 
     if custom_msgs:
-        for msg_item in custom_msgs:
+        for entry in custom_msgs:
             try:
-                msg_type = msg_item.get("type")
-                file_id = msg_item.get("file_id")
-                caption = msg_item.get("caption")
-                entities = deserialize_entities(msg_item.get("entities"))
+                if isinstance(entry, list):
+                    # Deliver the album intact
+                    await send_media_group_intact(context.bot, user.id, entry)
+                elif isinstance(entry, dict):
+                    msg_type = entry.get("type")
+                    file_id = entry.get("file_id")
+                    caption = entry.get("caption")
+                    entities = deserialize_entities(entry.get("entities"))
 
-                if msg_type == "text":
-                    text_content = msg_item.get("text", "")
-                    text_content = text_content.replace("{name}", f"**{user.first_name}**")
-                    await context.bot.send_message(
-                        chat_id=user.id,
-                        text=text_content,
-                        entities=entities,
-                        parse_mode="Markdown" if not entities else None
-                    )
-                elif msg_type == "photo":
-                    await context.bot.send_photo(chat_id=user.id, photo=file_id, caption=caption, caption_entities=entities)
-                elif msg_type == "video":
-                    await context.bot.send_video(chat_id=user.id, video=file_id, caption=caption, caption_entities=entities)
-                elif msg_type == "document":
-                    await context.bot.send_document(chat_id=user.id, document=file_id, caption=caption, caption_entities=entities)
-                elif msg_type == "audio":
-                    await context.bot.send_audio(chat_id=user.id, audio=file_id, caption=caption, caption_entities=entities)
-                elif msg_type == "voice":
-                    await context.bot.send_voice(chat_id=user.id, voice=file_id, caption=caption, caption_entities=entities)
+                    if msg_type == "text":
+                        text_content = entry.get("text", "")
+                        text_content = text_content.replace("{name}", f"**{user.first_name}**")
+                        await context.bot.send_message(
+                            chat_id=user.id,
+                            text=text_content,
+                            entities=entities,
+                            parse_mode="Markdown" if not entities else None
+                        )
+                    elif msg_type == "photo":
+                        await context.bot.send_photo(chat_id=user.id, photo=file_id, caption=caption, caption_entities=entities)
+                    elif msg_type == "video":
+                        await context.bot.send_video(chat_id=user.id, video=file_id, caption=caption, caption_entities=entities)
+                    elif msg_type == "document":
+                        await context.bot.send_document(chat_id=user.id, document=file_id, caption=caption, caption_entities=entities)
+                    elif msg_type == "audio":
+                        await context.bot.send_audio(chat_id=user.id, audio=file_id, caption=caption, caption_entities=entities)
+                    elif msg_type == "voice":
+                        await context.bot.send_voice(chat_id=user.id, voice=file_id, caption=caption, caption_entities=entities)
 
                 await asyncio.sleep(0.3)
             except Exception as e:
@@ -792,7 +807,7 @@ async def update_start_msg_command(update: Update, context: ContextTypes.DEFAULT
 
     instr = (
         "✏️ **CUSTOM /START MESSAGE SETUP MODE ACTIVE!**\n\n"
-        "Aap jo jo media (Videos, Photos, Audio, Documents, Text Messages) `/start` dabane par user ko bhejna chahte hain, ek ek karke yahan bhejin.\n\n"
+        "Aap jo jo media (Videos, Photos, Albums, Audio, Documents, Text Messages) `/start` dabane par user ko bhejna chahte hain, ek ek karke ya album me yahan bhejin.\n\n"
         "Jab saare messages bhej lein, toh niche **`done`** likh kar bhej dein! Bot unhe auto-save kar lega."
     )
     await update.message.reply_text(instr, parse_mode="Markdown")
@@ -1107,7 +1122,7 @@ async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, adm
         await context.bot.send_message(chat_id=admin_id, text=f"👥 Broadcast (With Buttons) sent to {success}/{len(all_users)} Users!{clean_msg}")
 
 # ------------------------------------------------------------------
-# MEDIA GROUP / ALBUM BATCH DISPATCH WORKER
+# MEDIA GROUP / ALBUM BATCH DISPATCH WORKER (UNIVERSAL INTACT)
 # ------------------------------------------------------------------
 async def process_media_group_buffer(media_group_id, context):
     await asyncio.sleep(0.8) # Wait for all album items to buffer
@@ -1119,8 +1134,9 @@ async def process_media_group_buffer(media_group_id, context):
     user = first_msg.from_user
     chat = first_msg.chat
 
-    # AGAR ADMIN /updatestartmsg SETUP MODE ME HAI, TOH ALBUM BROADCAST MAT KARO! BUFFER ME ADD KARO!
+    # 1. IF ADMIN IS IN /updatestartmsg SETUP MODE, SAVE AS AN INTACT ALBUM UNIT
     if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
+        album_items = []
         for msg in msg_list:
             item = {}
             if msg.photo:
@@ -1132,11 +1148,13 @@ async def process_media_group_buffer(media_group_id, context):
             elif msg.audio:
                 item = {"type": "audio", "file_id": msg.audio.file_id, "caption": msg.caption, "entities": serialize_entities(msg.caption_entities)}
             if item:
-                admin_start_msg_buffers[user.id].append(item)
-        await context.bot.send_message(chat_id=user.id, text=f"📥 Album of {len(msg_list)} items added to start message buffer! Aur bhejin ya **`done`** likhein.")
+                album_items.append(item)
+        if album_items:
+            admin_start_msg_buffers[user.id].append(album_items)
+            await context.bot.send_message(chat_id=user.id, text=f"📥 Album ({len(album_items)} items) added as a single unit to start message buffer! Aur bhejin ya **`done`** likhein.")
         return
 
-    # Forum routing for Media Group
+    # 2. FORUM ROUTING FOR USER CHAT ALBUMS
     if user.id not in ADMIN_USER_IDS:
         if ADMIN_GROUP_ID != 0:
             thread_id = await get_or_create_user_topic(context.bot, user)
@@ -1148,7 +1166,7 @@ async def process_media_group_buffer(media_group_id, context):
                     logger.error(f"Failed to route album to topic: {e}")
         return
 
-    # Admin Broadcast / Channel Routing for Media Group
+    # 3. ADMIN BROADCAST / PREDICTION ALBUM ROUTING
     if chat.id != ADMIN_GROUP_ID and user.id in ADMIN_USER_IDS:
         current_mode = admin_modes.get(user.id, "channel")
         if current_mode == "channel":
@@ -1190,7 +1208,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
-    # 1. Media Group (Album) Detection and Buffering
+    # 1. Media Group (Album) Detection and Buffering (Highest Priority for Albums)
     if message.media_group_id:
         mg_id = message.media_group_id
         if mg_id not in media_group_buffers:
@@ -1206,7 +1224,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             admin_states.pop(user.id, None)
             buffered = admin_start_msg_buffers.pop(user.id, [])
             update_welcome_setting({"custom_start_msgs": buffered})
-            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Messages/Media saved for `/start` command!", parse_mode="Markdown")
+            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Units/Messages saved for `/start` command!", parse_mode="Markdown")
             return
 
         item = {}
@@ -1226,7 +1244,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         if item:
             admin_start_msg_buffers[user.id].append(item)
             await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
-        return  # YAHAN SE TURANT RETURN HO JAYEGA, KABHI BHI BROADCAST NAHI HOGA!
+        return  # TURANT RETURN, NO BROADCAST!
 
     # Admin Settings Inputs & Custom Button Interception
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
