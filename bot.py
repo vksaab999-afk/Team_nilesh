@@ -1119,6 +1119,23 @@ async def process_media_group_buffer(media_group_id, context):
     user = first_msg.from_user
     chat = first_msg.chat
 
+    # AGAR ADMIN /updatestartmsg SETUP MODE ME HAI, TOH ALBUM BROADCAST MAT KARO! BUFFER ME ADD KARO!
+    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
+        for msg in msg_list:
+            item = {}
+            if msg.photo:
+                item = {"type": "photo", "file_id": msg.photo[-1].file_id, "caption": msg.caption, "entities": serialize_entities(msg.caption_entities)}
+            elif msg.video:
+                item = {"type": "video", "file_id": msg.video.file_id, "caption": msg.caption, "entities": serialize_entities(msg.caption_entities)}
+            elif msg.document:
+                item = {"type": "document", "file_id": msg.document.file_id, "caption": msg.caption, "entities": serialize_entities(msg.caption_entities)}
+            elif msg.audio:
+                item = {"type": "audio", "file_id": msg.audio.file_id, "caption": msg.caption, "entities": serialize_entities(msg.caption_entities)}
+            if item:
+                admin_start_msg_buffers[user.id].append(item)
+        await context.bot.send_message(chat_id=user.id, text=f"📥 Album of {len(msg_list)} items added to start message buffer! Aur bhejin ya **`done`** likhein.")
+        return
+
     # Forum routing for Media Group
     if user.id not in ADMIN_USER_IDS:
         if ADMIN_GROUP_ID != 0:
@@ -1183,7 +1200,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             media_group_buffers[mg_id].append(message)
         return
 
-    # 2. Custom Start Message Setup Mode Interception
+    # 2. Custom Start Message Setup Mode Interception (STRICTLY ISOLATED)
     if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
         if message.text and message.text.strip().lower() == "done":
             admin_states.pop(user.id, None)
@@ -1209,7 +1226,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
         if item:
             admin_start_msg_buffers[user.id].append(item)
             await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
-        return
+        return  # YAHAN SE TURANT RETURN HO JAYEGA, KABHI BHI BROADCAST NAHI HOGA!
 
     # Admin Settings Inputs & Custom Button Interception
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
