@@ -14,6 +14,10 @@ from telegram import (
     BotCommand,
     BotCommandScopeDefault,
     BotCommandScopeChat,
+    InputMediaPhoto,
+    InputMediaVideo,
+    InputMediaDocument,
+    InputMediaAudio,
 )
 from telegram.error import RetryAfter, Forbidden, BadRequest
 from telegram.ext import (
@@ -57,6 +61,8 @@ ADMIN_USER_IDS = [5785924075]
 admin_modes = {}
 admin_states = {}
 pending_broadcast_messages = {}
+admin_start_msg_buffers = {}
+media_group_buffers = {}
 
 # ------------------------------------------------------------------
 # Flask keep-alive
@@ -126,6 +132,7 @@ async def setup_bot_commands(application):
 
         admin_commands = [
             BotCommand("start", "🚀 Start Bot / Refresh karne ke liye ✅"),
+            BotCommand("updatestartmsg", "✏️ Set / Update Custom /start Messages ✅"),
             BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
             BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye ✅"),
             BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye ✅"),
@@ -188,6 +195,7 @@ def get_welcome_settings():
             "audio_caption": None,
             "audio_entities": None,
             "audio_buttons": [],
+            "custom_start_msgs": []
         }
         settings_collection.insert_one(default_settings)
         return default_settings
@@ -387,6 +395,29 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             reply_markup=reply_markup_to_use
         )
     return await safe_call(_native_copy)
+
+# Helper function to forward album / media groups intact
+async def send_media_group_intact(bot, target_chat_id, messages_list, message_thread_id=None):
+    media_items = []
+    for msg in messages_list:
+        caption = msg.caption or None
+        entities = msg.caption_entities or None
+        if msg.photo:
+            media_items.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=caption, caption_entities=entities))
+        elif msg.video:
+            media_items.append(InputMediaVideo(media=msg.video.file_id, caption=caption, caption_entities=entities))
+        elif msg.document:
+            media_items.append(InputMediaDocument(media=msg.document.file_id, caption=caption, caption_entities=entities))
+        elif msg.audio:
+            media_items.append(InputMediaAudio(media=msg.audio.file_id, caption=caption, caption_entities=entities))
+
+    if media_items:
+        async def _send_group():
+            kwargs = {"chat_id": target_chat_id, "media": media_items}
+            if message_thread_id:
+                kwargs["message_thread_id"] = message_thread_id
+            return await bot.send_media_group(**kwargs)
+        return await safe_call(_send_group)
 
 # ------------------------------------------------------------------
 # Forum Topic Resolver Engine (Pins First Profile Message Automatically)
@@ -711,9 +742,60 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         {"$set": {"user_id": user.id, "first_name": user.first_name, "username": user.username}},
         upsert=True,
     )
-    await update.message.reply_text(
-        f"👋 Welcome {user.first_name}!\nAapka swagat hai. Batao dear kitna loss hai aapka abhi m online hi hu personally play karwa ke pura recover karwa dunga"
+
+    settings = get_welcome_settings()
+    custom_msgs = settings.get("custom_start_msgs", [])
+
+    if custom_msgs:
+        for msg_item in custom_msgs:
+            try:
+                msg_type = msg_item.get("type")
+                file_id = msg_item.get("file_id")
+                caption = msg_item.get("caption")
+                entities = deserialize_entities(msg_item.get("entities"))
+
+                if msg_type == "text":
+                    text_content = msg_item.get("text", "")
+                    text_content = text_content.replace("{name}", f"**{user.first_name}**")
+                    await context.bot.send_message(
+                        chat_id=user.id,
+                        text=text_content,
+                        entities=entities,
+                        parse_mode="Markdown" if not entities else None
+                    )
+                elif msg_type == "photo":
+                    await context.bot.send_photo(chat_id=user.id, photo=file_id, caption=caption, caption_entities=entities)
+                elif msg_type == "video":
+                    await context.bot.send_video(chat_id=user.id, video=file_id, caption=caption, caption_entities=entities)
+                elif msg_type == "document":
+                    await context.bot.send_document(chat_id=user.id, document=file_id, caption=caption, caption_entities=entities)
+                elif msg_type == "audio":
+                    await context.bot.send_audio(chat_id=user.id, audio=file_id, caption=caption, caption_entities=entities)
+                elif msg_type == "voice":
+                    await context.bot.send_voice(chat_id=user.id, voice=file_id, caption=caption, caption_entities=entities)
+
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                logger.error(f"Error delivering custom start msg item: {e}")
+    else:
+        await update.message.reply_text(
+            f"👋 Welcome {user.first_name}!\nAapka swagat hai. Aap jo bhi message bhejenge, hamari team tak pahunch jayega."
+        )
+
+async def update_start_msg_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_USER_IDS:
+        return
+
+    admin_states[user.id] = "awaiting_start_msgs_setup"
+    admin_start_msg_buffers[user.id] = []
+
+    instr = (
+        "✏️ **CUSTOM /START MESSAGE SETUP MODE ACTIVE!**\n\n"
+        "Aap jo jo media (Videos, Photos, Audio, Documents, Text Messages) `/start` dabane par user ko bhejna chahte hain, ek ek karke yahan bhejin.\n\n"
+        "Jab saare messages bhej lein, toh niche **`done`** likh kar bhej dein! Bot unhe auto-save kar lega."
     )
+    await update.message.reply_text(instr, parse_mode="Markdown")
 
 async def prediction_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1025,6 +1107,54 @@ async def dispatch_broadcast_with_markup(context: ContextTypes.DEFAULT_TYPE, adm
         await context.bot.send_message(chat_id=admin_id, text=f"👥 Broadcast (With Buttons) sent to {success}/{len(all_users)} Users!{clean_msg}")
 
 # ------------------------------------------------------------------
+# MEDIA GROUP / ALBUM BATCH DISPATCH WORKER
+# ------------------------------------------------------------------
+async def process_media_group_buffer(media_group_id, context):
+    await asyncio.sleep(0.8) # Wait for all album items to buffer
+    msg_list = media_group_buffers.pop(media_group_id, [])
+    if not msg_list:
+        return
+
+    first_msg = msg_list[0]
+    user = first_msg.from_user
+    chat = first_msg.chat
+
+    # Forum routing for Media Group
+    if user.id not in ADMIN_USER_IDS:
+        if ADMIN_GROUP_ID != 0:
+            thread_id = await get_or_create_user_topic(context.bot, user)
+            if thread_id:
+                try:
+                    await send_media_group_intact(context.bot, ADMIN_GROUP_ID, msg_list, message_thread_id=thread_id)
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to route album to topic: {e}")
+        return
+
+    # Admin Broadcast / Channel Routing for Media Group
+    if chat.id != ADMIN_GROUP_ID and user.id in ADMIN_USER_IDS:
+        current_mode = admin_modes.get(user.id, "channel")
+        if current_mode == "channel":
+            active_channels = [ch for ch in (await get_live_active_channels(context.bot)) if ch.get("prediction_enabled", True) != False]
+            for ch in active_channels:
+                try:
+                    await send_media_group_intact(context.bot, ch["chat_id"], msg_list)
+                except Exception as e:
+                    logger.error(f"Failed to post album to channel {ch['chat_id']}: {e}")
+            await context.bot.send_message(chat_id=user.id, text=f"📢 Album Broadcast sent to {len(active_channels)} Selected Channels!")
+        else:
+            all_users = list(users_collection.find({"user_id": {"$nin": ADMIN_USER_IDS}}))
+            success = 0
+            for u in all_users:
+                try:
+                    await send_media_group_intact(context.bot, u["user_id"], msg_list)
+                    success += 1
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+            await context.bot.send_message(chat_id=user.id, text=f"👥 Album Broadcast sent to {success}/{len(all_users)} Users!")
+
+# ------------------------------------------------------------------
 # Main Message Handler Logic
 # ------------------------------------------------------------------
 async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1042,6 +1172,44 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     user = update.effective_user
     chat = update.effective_chat
+
+    # 1. Media Group (Album) Detection and Buffering
+    if message.media_group_id:
+        mg_id = message.media_group_id
+        if mg_id not in media_group_buffers:
+            media_group_buffers[mg_id] = [message]
+            asyncio.create_task(process_media_group_buffer(mg_id, context))
+        else:
+            media_group_buffers[mg_id].append(message)
+        return
+
+    # 2. Custom Start Message Setup Mode Interception
+    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
+        if message.text and message.text.strip().lower() == "done":
+            admin_states.pop(user.id, None)
+            buffered = admin_start_msg_buffers.pop(user.id, [])
+            update_welcome_setting({"custom_start_msgs": buffered})
+            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Messages/Media saved for `/start` command!", parse_mode="Markdown")
+            return
+
+        item = {}
+        if message.text:
+            item = {"type": "text", "text": message.text, "entities": serialize_entities(message.entities)}
+        elif message.photo:
+            item = {"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.video:
+            item = {"type": "video", "file_id": message.video.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.document:
+            item = {"type": "document", "file_id": message.document.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.audio:
+            item = {"type": "audio", "file_id": message.audio.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.voice:
+            item = {"type": "voice", "file_id": message.voice.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
+
+        if item:
+            admin_start_msg_buffers[user.id].append(item)
+            await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
+        return
 
     # Admin Settings Inputs & Custom Button Interception
     if user.id in ADMIN_USER_IDS and user.id in admin_states:
@@ -1061,7 +1229,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 clean_caption = None
                 if pending_msg.text and "/iwantaddbutton" in pending_msg.text:
                     clean_text = pending_msg.text.replace("/iwantaddbutton", "").strip()
-                elif pending_msg.caption and "/iwantaddbutton" in pending_caption:
+                elif pending_msg.caption and "/iwantaddbutton" in pending_msg.caption:
                     clean_caption = pending_msg.caption.replace("/iwantaddbutton", "").strip()
 
                 await dispatch_broadcast_with_markup(
@@ -1113,7 +1281,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text("✅ Audio with Caption & Emojis update ho gayi hai!")
             return
 
-    # 1. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
+    # 3. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
     if chat.id == ADMIN_GROUP_ID:
         thread_id = message.message_thread_id
         if not thread_id:
@@ -1128,7 +1296,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error replying to user {target_user_id} from Forum: {e}")
         return
 
-    # 2. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC (CLEAN WITHOUT PER-MSG BUTTON)
+    # 4. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC (CLEAN WITHOUT PER-MSG BUTTON)
     if user.id not in ADMIN_USER_IDS:
         users_collection.update_one(
             {"user_id": user.id},
@@ -1161,7 +1329,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error forwarding user msg to admin: {e}")
         return
 
-    # 3. ADMIN DIRECT DM MESSAGES -> CHECK FOR /iwantaddbutton TRIGGER
+    # 5. ADMIN DIRECT DM MESSAGES -> CHECK FOR /iwantaddbutton TRIGGER
     msg_has_trigger = False
     if message.text and "/iwantaddbutton" in message.text:
         msg_has_trigger = True
@@ -1275,6 +1443,7 @@ def main():
     app_bot = ApplicationBuilder().token(TOKEN).build()
 
     app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("updatestartmsg", update_start_msg_command))
     app_bot.add_handler(CommandHandler("prediction", prediction_command))
     app_bot.add_handler(CommandHandler("broadcast", broadcast_command))
     app_bot.add_handler(CommandHandler("welcome", welcome_command))
