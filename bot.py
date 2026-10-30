@@ -1241,7 +1241,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Units/Messages saved for `/start` command!", parse_mode="Markdown")
             return
 
-        # Check if message contains /iwantaddbutton trigger
         msg_has_trigger = False
         clean_text = None
         clean_caption = None
@@ -1522,7 +1521,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ------------------------------------------------------------------
 # Main Entry Point
 # ------------------------------------------------------------------
-def main():
+main():
     if not TOKEN:
         logger.error("BOT_TOKEN missing. System exiting...")
         return
