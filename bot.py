@@ -1521,7 +1521,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ------------------------------------------------------------------
 # Main Entry Point
 # ------------------------------------------------------------------
-main():
+def main():
     if not TOKEN:
         logger.error("BOT_TOKEN missing. System exiting...")
         return
