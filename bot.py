@@ -1208,31 +1208,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             media_group_buffers[mg_id].append(message)
         return
 
-    # 2. Check if Admin is in Setup Mode awaiting buttons for a pending setup message
-    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) in ["awaiting_start_msg_buttons", "awaiting_join_msg_buttons"]:
-        if message.text:
-            target_setup_state = admin_states.pop(user.id, None)
-            pending_msg_info = pending_setup_messages.pop(user.id, None)
-            
-            if not pending_msg_info:
-                await message.reply_text("⚠️ Koi pending message nahi mila. Kripya fir se koshish karein.")
-                return
-
-            parsed_btns, _ = parse_buttons_text(message.text)
-            if parsed_btns:
-                pending_msg_info["buttons"] = parsed_btns
-                
-                if target_setup_state == "awaiting_start_msg_buttons":
-                    admin_start_msg_buffers[user.id].append(pending_msg_info)
-                    await message.reply_text("✅ Message with Custom Buttons added to `/start` buffer! Aur messages bhejin ya **`done`** likhein.", parse_mode="Markdown")
-                elif target_setup_state == "awaiting_join_msg_buttons":
-                    admin_join_msg_buffers[user.id].append(pending_msg_info)
-                    await message.reply_text("✅ Message with Custom Buttons added to Join Request buffer! Aur messages bhejin ya **`done`** likhein.", parse_mode="Markdown")
-            else:
-                await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
-            return
-
-    # 3. Custom Start Message Setup Mode Interception
+    # 2. STRICT CHECK: Custom Start Message Setup Mode Interception
     if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
         if message.text and message.text.strip().lower() == "done":
             admin_states.pop(user.id, None)
@@ -1281,7 +1257,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
         return
 
-    # 4. Custom Join Request Welcome Setup Mode Interception
+    # 3. STRICT CHECK: Custom Join Request Welcome Setup Mode Interception
     if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_join_msgs_setup":
         if message.text and message.text.strip().lower() == "done":
             admin_states.pop(user.id, None)
@@ -1329,6 +1305,30 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 admin_join_msg_buffers[user.id].append(item)
                 await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
         return
+
+    # 4. Check if Admin is in Setup Mode awaiting buttons for a pending setup message
+    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) in ["awaiting_start_msg_buttons", "awaiting_join_msg_buttons"]:
+        if message.text:
+            target_setup_state = admin_states.pop(user.id, None)
+            pending_msg_info = pending_setup_messages.pop(user.id, None)
+            
+            if not pending_msg_info:
+                await message.reply_text("⚠️ Koi pending message nahi mila. Kripya fir se koshish karein.")
+                return
+
+            parsed_btns, _ = parse_buttons_text(message.text)
+            if parsed_btns:
+                pending_msg_info["buttons"] = parsed_btns
+                
+                if target_setup_state == "awaiting_start_msg_buttons":
+                    admin_start_msg_buffers[user.id].append(pending_msg_info)
+                    await message.reply_text("✅ Message with Custom Buttons added to `/start` buffer! Aur messages bhejin ya **`done`** likhein.", parse_mode="Markdown")
+                elif target_setup_state == "awaiting_join_msg_buttons":
+                    admin_join_msg_buffers[user.id].append(pending_msg_info)
+                    await message.reply_text("✅ Message with Custom Buttons added to Join Request buffer! Aur messages bhejin ya **`done`** likhein.", parse_mode="Markdown")
+            else:
+                await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
+            return
 
     # 5. Normal Broadcast / Prediction Button Interception (/iwantaddbutton outside setup mode)
     msg_has_trigger = False
