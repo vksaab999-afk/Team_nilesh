@@ -136,7 +136,7 @@ async def setup_bot_commands(application):
             BotCommand("updatestartmsg", "✏️ Set / Update Custom /start Messages ✅"),
             BotCommand("updatejoinrequest", "🤝 Set / Update Custom Join Request Welcome Messages ✅"),
             BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
-            BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye ✅"),
+            BotCommand("broadcast", "🫂 User's ko broadcast karne के liye ✅"),
             BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye ✅"),
             BotCommand("joinrequest", "📥 konse channel me join request auto accept honi chahiya konse me nahi set karne ke liye ✅"),
             BotCommand("quiz", "🧩 channel ya User's ko quiz bhejne ke liye ✅"),
@@ -375,6 +375,16 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
                 )
             return await safe_call(_send_doc)
 
+        if message.audio or message.voice:
+            file_id = message.audio.file_id if message.audio else message.voice.file_id
+            async def _send_aud():
+                return await bot.send_audio(
+                    chat_id=chat_id, audio=file_id, caption=override_caption,
+                    caption_entities=message.caption_entities, reply_to_message_id=reply_to_channel_msg_id,
+                    message_thread_id=message_thread_id, reply_markup=reply_markup_to_use
+                )
+            return await safe_call(_send_aud)
+
     # DEFAULT NATIVE DIRECT COPY (Preserves Animated Emoji Entities Directly at Server Level)
     async def _native_copy():
         return await bot.copy_message(
@@ -398,7 +408,7 @@ async def send_media_group_intact(bot, target_chat_id, messages_list, message_th
             file_id = msg.get("file_id")
             m_type = msg.get("type")
         else:
-            file_id = msg.photo[-1].file_id if msg.photo else (msg.video.file_id if msg.video else (msg.document.file_id if msg.document else None))
+            file_id = msg.photo[-1].file_id if msg.photo else (msg.video.file_id if msg.video else (msg.document.file_id if msg.document else (msg.audio.file_id if msg.audio else (msg.voice.file_id if msg.voice else None))))
             m_type = "photo" if msg.photo else ("video" if msg.video else ("document" if msg.document else "audio"))
 
         if not file_id:
@@ -581,7 +591,6 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     if custom_join_msgs:
         await deliver_custom_message_list(context.bot, user.id, user_first_name, custom_join_msgs)
     else:
-        # Fallback default if nothing configured
         if settings.get("video_id"):
             try:
                 vid_cap = settings.get("video_caption") or ""
@@ -1174,6 +1183,27 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
+    # 0. ABSOLUTE HIGHEST PRIORITY: ADMIN /iwantaddbutton TRIGGER CHECK
+    msg_has_trigger = False
+    if message.text and "/iwantaddbutton" in message.text:
+        msg_has_trigger = True
+    elif message.caption and "/iwantaddbutton" in message.caption:
+        msg_has_trigger = True
+
+    if user.id in ADMIN_USER_IDS and msg_has_trigger:
+        pending_broadcast_messages[user.id] = message
+        admin_states[user.id] = "awaiting_broadcast_buttons"
+
+        instr = (
+            "🔘 **ADD CUSTOM STYLED BUTTONS FOR THIS BROADCAST/PREDICTION**\n\n"
+            "Aapka message hold kar liya gaya hai! Ab buttons ka format bhejey:\n\n"
+            "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
+            "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`\n\n"
+            "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
+        )
+        await message.reply_text(instr, parse_mode="Markdown")
+        return
+
     # 1. Media Group (Album) Detection and Buffering
     if message.media_group_id:
         mg_id = message.media_group_id
@@ -1325,27 +1355,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await context.bot.send_message(chat_id=admin_id, text=caption_info, reply_to_message_id=copied_msg.message_id, parse_mode="Markdown")
             except Exception as e:
                 logger.error(f"Error forwarding user msg to admin: {e}")
-        return
-
-    # 6. ADMIN DIRECT DM MESSAGES -> CHECK FOR /iwantaddbutton TRIGGER
-    msg_has_trigger = False
-    if message.text and "/iwantaddbutton" in message.text:
-        msg_has_trigger = True
-    elif message.caption and "/iwantaddbutton" in message.caption:
-        msg_has_trigger = True
-
-    if msg_has_trigger:
-        pending_broadcast_messages[user.id] = message
-        admin_states[user.id] = "awaiting_broadcast_buttons"
-
-        instr = (
-            "🔘 **ADD CUSTOM STYLED BUTTONS FOR THIS BROADCAST/PREDICTION**\n\n"
-            "Aapka message hold kar liya gaya hai! Ab buttons ka format bhejey:\n\n"
-            "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
-            "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`\n\n"
-            "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
-        )
-        await message.reply_text(instr, parse_mode="Markdown")
         return
 
     # NORMAL DIRECT BROADCAST/PREDICTION FLOW
