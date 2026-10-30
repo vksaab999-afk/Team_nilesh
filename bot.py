@@ -61,6 +61,7 @@ ADMIN_USER_IDS = [5785924075]
 admin_modes = {}
 admin_states = {}
 pending_broadcast_messages = {}
+pending_setup_messages = {}
 admin_start_msg_buffers = {}
 admin_join_msg_buffers = {}
 media_group_buffers = {}
@@ -136,7 +137,7 @@ async def setup_bot_commands(application):
             BotCommand("updatestartmsg", "✏️ Set / Update Custom /start Messages ✅"),
             BotCommand("updatejoinrequest", "🤝 Set / Update Custom Join Request Welcome Messages ✅"),
             BotCommand("prediction", "📢 prediction dene or kon konse channel pe prediction dena hai set karne ke liye ✅"),
-            BotCommand("broadcast", "🫂 User's ko broadcast karne के liye ✅"),
+            BotCommand("broadcast", "🫂 User's ko broadcast karne ke liye ✅"),
             BotCommand("welcome", "🤝 automatic welcome msg kon konse channel pe jana chahiya kon konse pe nahi set karne ke liye ✅"),
             BotCommand("joinrequest", "📥 konse channel me join request auto accept honi chahiya konse me nahi set karne ke liye ✅"),
             BotCommand("quiz", "🧩 channel ya User's ko quiz bhejne ke liye ✅"),
@@ -315,7 +316,6 @@ async def safe_call(coro_factory, retries: int = 3):
 async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_id=None, message_thread_id=None, custom_reply_markup=None, override_text=None, override_caption=None):
     reply_markup_to_use = custom_reply_markup if custom_reply_markup is not None else message.reply_markup
 
-    # Poll Handling
     if message.poll:
         async def _send_poll():
             poll = message.poll
@@ -337,7 +337,6 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
             return await bot.send_poll(**poll_kwargs)
         return await safe_call(_send_poll)
 
-    # Overridden text or caption (from /iwantaddbutton)
     if override_text is not None or override_caption is not None:
         if message.text:
             async def _send_txt():
@@ -385,7 +384,6 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
                 )
             return await safe_call(_send_aud)
 
-    # DEFAULT NATIVE DIRECT COPY (Preserves Animated Emoji Entities Directly at Server Level)
     async def _native_copy():
         return await bot.copy_message(
             chat_id=chat_id,
@@ -397,13 +395,19 @@ async def send_clean_with_entities(bot, chat_id, message, reply_to_channel_msg_i
         )
     return await safe_call(_native_copy)
 
-# Universal helper function to send album / media groups intact
+# Helper function to send album / media groups intact with buttons support
 async def send_media_group_intact(bot, target_chat_id, messages_list, message_thread_id=None):
     media_items = []
-    for msg in messages_list:
+    markup_to_use = None
+
+    for idx, msg in enumerate(messages_list):
         caption = msg.get("caption") if isinstance(msg, dict) else (msg.caption or None)
         entities = deserialize_entities(msg.get("entities")) if isinstance(msg, dict) else (msg.caption_entities or None)
+        buttons = msg.get("buttons") if isinstance(msg, dict) else None
         
+        if buttons and idx == len(messages_list) - 1:
+            markup_to_use = build_inline_keyboard(buttons)
+
         if isinstance(msg, dict):
             file_id = msg.get("file_id")
             m_type = msg.get("type")
@@ -429,7 +433,15 @@ async def send_media_group_intact(bot, target_chat_id, messages_list, message_th
             if message_thread_id:
                 kwargs["message_thread_id"] = message_thread_id
             return await bot.send_media_group(**kwargs)
-        return await safe_call(_send_group)
+        
+        sent_group = await safe_call(_send_group)
+        if markup_to_use and sent_group:
+            try:
+                last_sent_msg = sent_group[-1]
+                await bot.edit_message_reply_markup(chat_id=target_chat_id, message_id=last_sent_msg.message_id, reply_markup=markup_to_use)
+            except Exception:
+                pass
+        return sent_group
 
 # Helper function to dispatch custom message list (start or join welcome)
 async def deliver_custom_message_list(bot, target_chat_id, user_first_name, custom_msgs):
@@ -444,6 +456,8 @@ async def deliver_custom_message_list(bot, target_chat_id, user_first_name, cust
                 if caption:
                     caption = caption.replace("{name}", f"**{user_first_name}**")
                 entities = deserialize_entities(entry.get("entities"))
+                buttons = entry.get("buttons")
+                markup = build_inline_keyboard(buttons) if buttons else None
 
                 if msg_type == "text":
                     text_content = entry.get("text", "")
@@ -452,18 +466,19 @@ async def deliver_custom_message_list(bot, target_chat_id, user_first_name, cust
                         chat_id=target_chat_id,
                         text=text_content,
                         entities=entities,
+                        reply_markup=markup,
                         parse_mode="Markdown" if not entities else None
                     )
                 elif msg_type == "photo":
-                    await bot.send_photo(chat_id=target_chat_id, photo=file_id, caption=caption, caption_entities=entities)
+                    await bot.send_photo(chat_id=target_chat_id, photo=file_id, caption=caption, caption_entities=entities, reply_markup=markup)
                 elif msg_type == "video":
-                    await bot.send_video(chat_id=target_chat_id, video=file_id, caption=caption, caption_entities=entities)
+                    await bot.send_video(chat_id=target_chat_id, video=file_id, caption=caption, caption_entities=entities, reply_markup=markup)
                 elif msg_type == "document":
-                    await bot.send_document(chat_id=target_chat_id, document=file_id, caption=caption, caption_entities=entities)
+                    await bot.send_document(chat_id=target_chat_id, document=file_id, caption=caption, caption_entities=entities, reply_markup=markup)
                 elif msg_type == "audio":
-                    await bot.send_audio(chat_id=target_chat_id, audio=file_id, caption=caption, caption_entities=entities)
+                    await bot.send_audio(chat_id=target_chat_id, audio=file_id, caption=caption, caption_entities=entities, reply_markup=markup)
                 elif msg_type == "voice":
-                    await bot.send_voice(chat_id=target_chat_id, voice=file_id, caption=caption, caption_entities=entities)
+                    await bot.send_voice(chat_id=target_chat_id, voice=file_id, caption=caption, caption_entities=entities, reply_markup=markup)
 
             await asyncio.sleep(0.3)
         except Exception as e:
@@ -493,7 +508,6 @@ async def get_or_create_user_topic(bot, user) -> int:
             upsert=True
         )
 
-        # Send Profile Info & Direct Chat Button ONLY ONCE on topic creation and Auto-Pin it
         username_str = f"@{user.username}" if user.username else "No Username"
         profile_card = (
             f"👤 **USER PROFILE INFO**\n"
@@ -515,14 +529,13 @@ async def get_or_create_user_topic(bot, user) -> int:
                 reply_markup=contact_markup,
                 parse_mode="Markdown"
             )
-            # Auto-Pin message at top of thread safely
             await bot.pin_chat_message(
                 chat_id=ADMIN_GROUP_ID,
                 message_id=pinned_msg.message_id,
                 disable_notification=True
             )
         except Exception as err:
-            logger.error(f"❌ Error pinning top profile card (Check 'Pin Messages' admin right in group): {err}")
+            logger.error(f"❌ Error pinning top profile card: {err}")
 
         return thread_id
     except Exception as e:
@@ -773,8 +786,9 @@ async def update_start_msg_command(update: Update, context: ContextTypes.DEFAULT
 
     instr = (
         "✏️ **CUSTOM /START MESSAGE SETUP MODE ACTIVE!**\n\n"
-        "Aap jo jo media (Videos, Photos, Albums, Audio, Documents, Text Messages) `/start` dabane par user ko bhejna chahte hain, ek ek karke ya album me yahan bhejin.\n\n"
-        "Jab saare messages bhej lein, toh niche **`done`** likh kar bhej dein! Bot unhe auto-save kar lega."
+        "Aap jo jo media ya text `/start` dabane par user ko bhejna chahte hain, bhejin.\n"
+        "*(Agar kishi message ke sath button lagana ho, toh message ke sath `/iwantaddbutton` likh kar bhejin)*\n\n"
+        "Jab saare messages bhej lein, toh niche **`done`** likh kar bhej dein!"
     )
     await update.message.reply_text(instr, parse_mode="Markdown")
 
@@ -788,8 +802,9 @@ async def update_join_request_command(update: Update, context: ContextTypes.DEFA
 
     instr = (
         "✏️ **CUSTOM /UPDATEJOINREQUEST SETUP MODE ACTIVE!**\n\n"
-        "Aap jo jo media (Videos, Photos, Albums, Audio, Documents, Text Messages) Join Request accept hone par user ko welcome me bhejna chahte hain, ek ek karke ya album me yahan bhejin.\n\n"
-        "Jab saare messages bhej lein, toh niche **`done`** likh kar bhej dein! Bot unhe auto-save kar lega."
+        "Aap jo jo media ya text Join Request accept hone par user ko welcome me bhejna chahte hain, bhejin.\n"
+        "*(Agar kishi message ke sath button lagana ho, toh message ke sath `/iwantaddbutton` likh kar bhejin)*\n\n"
+        "Jab saare messages bhej lein, toh niche **`done`** likh kar bhej dein!"
     )
     await update.message.reply_text(instr, parse_mode="Markdown")
 
@@ -860,7 +875,7 @@ async def quiz_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             options = parts[1:-1]
             is_quiz = True
         except ValueError:
-            await update.message.reply_text("⚠️ Quiz me last part correct option index (e.g. 1 ya 2) hona chahiye!")
+            await update.message.reply_text("⚠️ Quiz me last part correct option index hona chahiye!")
             return
 
     current_mode = admin_modes.get(user.id, "channel")
@@ -1183,7 +1198,140 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = update.effective_user
     chat = update.effective_chat
 
-    # 0. ABSOLUTE HIGHEST PRIORITY: ADMIN /iwantaddbutton TRIGGER CHECK
+    # 1. Media Group (Album) Detection and Buffering
+    if message.media_group_id:
+        mg_id = message.media_group_id
+        if mg_id not in media_group_buffers:
+            media_group_buffers[mg_id] = [message]
+            asyncio.create_task(process_media_group_buffer(mg_id, context))
+        else:
+            media_group_buffers[mg_id].append(message)
+        return
+
+    # 2. Check if Admin is in Setup Mode awaiting buttons for a pending setup message
+    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) in ["awaiting_start_msg_buttons", "awaiting_join_msg_buttons"]:
+        if message.text:
+            target_setup_state = admin_states.pop(user.id, None)
+            pending_msg_info = pending_setup_messages.pop(user.id, None)
+            
+            if not pending_msg_info:
+                await message.reply_text("⚠️ Koi pending message nahi mila. Kripya fir se koshish karein.")
+                return
+
+            parsed_btns, _ = parse_buttons_text(message.text)
+            if parsed_btns:
+                pending_msg_info["buttons"] = parsed_btns
+                
+                if target_setup_state == "awaiting_start_msg_buttons":
+                    admin_start_msg_buffers[user.id].append(pending_msg_info)
+                    await message.reply_text("✅ Message with Custom Buttons added to `/start` buffer! Aur messages bhejin ya **`done`** likhein.", parse_mode="Markdown")
+                elif target_setup_state == "awaiting_join_msg_buttons":
+                    admin_join_msg_buffers[user.id].append(pending_msg_info)
+                    await message.reply_text("✅ Message with Custom Buttons added to Join Request buffer! Aur messages bhejin ya **`done`** likhein.", parse_mode="Markdown")
+            else:
+                await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
+            return
+
+    # 3. Custom Start Message Setup Mode Interception
+    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
+        if message.text and message.text.strip().lower() == "done":
+            admin_states.pop(user.id, None)
+            buffered = admin_start_msg_buffers.pop(user.id, [])
+            update_welcome_setting({"custom_start_msgs": buffered})
+            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Units/Messages saved for `/start` command!", parse_mode="Markdown")
+            return
+
+        # Check if message contains /iwantaddbutton trigger
+        msg_has_trigger = False
+        clean_text = None
+        clean_caption = None
+        if message.text and "/iwantaddbutton" in message.text:
+            msg_has_trigger = True
+            clean_text = message.text.replace("/iwantaddbutton", "").strip()
+        elif message.caption and "/iwantaddbutton" in message.caption:
+            msg_has_trigger = True
+            clean_caption = message.caption.replace("/iwantaddbutton", "").strip()
+
+        item = {}
+        if message.text:
+            item = {"type": "text", "text": clean_text if msg_has_trigger else message.text, "entities": serialize_entities(message.entities)}
+        elif message.photo:
+            item = {"type": "photo", "file_id": message.photo[-1].file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.video:
+            item = {"type": "video", "file_id": message.video.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.document:
+            item = {"type": "document", "file_id": message.document.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.audio:
+            item = {"type": "audio", "file_id": message.audio.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.voice:
+            item = {"type": "voice", "file_id": message.voice.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+
+        if item:
+            if msg_has_trigger:
+                pending_setup_messages[user.id] = item
+                admin_states[user.id] = "awaiting_start_msg_buttons"
+                instr = (
+                    "🔘 **ADD CUSTOM STYLED BUTTONS FOR THIS START MESSAGE**\n\n"
+                    "Message hold kar liya gaya hai! Ab buttons ka format bhejey:\n\n"
+                    "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
+                    "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`"
+                )
+                await message.reply_text(instr, parse_mode="Markdown")
+            else:
+                admin_start_msg_buffers[user.id].append(item)
+                await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
+        return
+
+    # 4. Custom Join Request Welcome Setup Mode Interception
+    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_join_msgs_setup":
+        if message.text and message.text.strip().lower() == "done":
+            admin_states.pop(user.id, None)
+            buffered = admin_join_msg_buffers.pop(user.id, [])
+            update_welcome_setting({"custom_join_msgs": buffered})
+            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Units/Messages saved for Join Request Welcome!", parse_mode="Markdown")
+            return
+
+        msg_has_trigger = False
+        clean_text = None
+        clean_caption = None
+        if message.text and "/iwantaddbutton" in message.text:
+            msg_has_trigger = True
+            clean_text = message.text.replace("/iwantaddbutton", "").strip()
+        elif message.caption and "/iwantaddbutton" in message.caption:
+            msg_has_trigger = True
+            clean_caption = message.caption.replace("/iwantaddbutton", "").strip()
+
+        item = {}
+        if message.text:
+            item = {"type": "text", "text": clean_text if msg_has_trigger else message.text, "entities": serialize_entities(message.entities)}
+        elif message.photo:
+            item = {"type": "photo", "file_id": message.photo[-1].file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.video:
+            item = {"type": "video", "file_id": message.video.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.document:
+            item = {"type": "document", "file_id": message.document.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.audio:
+            item = {"type": "audio", "file_id": message.audio.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+        elif message.voice:
+            item = {"type": "voice", "file_id": message.voice.file_id, "caption": clean_caption if msg_has_trigger else message.caption, "entities": serialize_entities(message.caption_entities)}
+
+        if item:
+            if msg_has_trigger:
+                pending_setup_messages[user.id] = item
+                admin_states[user.id] = "awaiting_join_msg_buttons"
+                instr = (
+                    "🔘 **ADD CUSTOM STYLED BUTTONS FOR THIS JOIN WELCOME MESSAGE**\n\n"
+                    "Message hold kar liya gaya hai! Ab buttons ka format bhejey:\n\n"
+                    "`Button 1 : AGENT CHANNEL - https://t.me/+aO4PoFUq5gU4YmNl | icon : 5418063924933173277 | style : success`\n\n"
+                    "`Button 2 : VKADDAGENCY - https://t.me/+rQ8jUMlvyZozNmE1 | icon : 4990182601252668309 | style : primary`"
+                )
+                await message.reply_text(instr, parse_mode="Markdown")
+            else:
+                admin_join_msg_buffers[user.id].append(item)
+                await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
+        return
+
+    # 5. Normal Broadcast / Prediction Button Interception (/iwantaddbutton outside setup mode)
     msg_has_trigger = False
     if message.text and "/iwantaddbutton" in message.text:
         msg_has_trigger = True
@@ -1202,72 +1350,6 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
             "*(Style Options: `primary` (Blue), `success` (Green), `danger` (Red))*"
         )
         await message.reply_text(instr, parse_mode="Markdown")
-        return
-
-    # 1. Media Group (Album) Detection and Buffering
-    if message.media_group_id:
-        mg_id = message.media_group_id
-        if mg_id not in media_group_buffers:
-            media_group_buffers[mg_id] = [message]
-            asyncio.create_task(process_media_group_buffer(mg_id, context))
-        else:
-            media_group_buffers[mg_id].append(message)
-        return
-
-    # 2. Custom Start Message Setup Mode Interception
-    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_start_msgs_setup":
-        if message.text and message.text.strip().lower() == "done":
-            admin_states.pop(user.id, None)
-            buffered = admin_start_msg_buffers.pop(user.id, [])
-            update_welcome_setting({"custom_start_msgs": buffered})
-            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Units/Messages saved for `/start` command!", parse_mode="Markdown")
-            return
-
-        item = {}
-        if message.text:
-            item = {"type": "text", "text": message.text, "entities": serialize_entities(message.entities)}
-        elif message.photo:
-            item = {"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.video:
-            item = {"type": "video", "file_id": message.video.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.document:
-            item = {"type": "document", "file_id": message.document.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.audio:
-            item = {"type": "audio", "file_id": message.audio.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.voice:
-            item = {"type": "voice", "file_id": message.voice.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-
-        if item:
-            admin_start_msg_buffers[user.id].append(item)
-            await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
-        return
-
-    # 3. Custom Join Request Welcome Setup Mode Interception
-    if user.id in ADMIN_USER_IDS and admin_states.get(user.id) == "awaiting_join_msgs_setup":
-        if message.text and message.text.strip().lower() == "done":
-            admin_states.pop(user.id, None)
-            buffered = admin_join_msg_buffers.pop(user.id, [])
-            update_welcome_setting({"custom_join_msgs": buffered})
-            await message.reply_text(f"✅ Successful! `{len(buffered)}` Custom Units/Messages saved for Join Request Welcome!", parse_mode="Markdown")
-            return
-
-        item = {}
-        if message.text:
-            item = {"type": "text", "text": message.text, "entities": serialize_entities(message.entities)}
-        elif message.photo:
-            item = {"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.video:
-            item = {"type": "video", "file_id": message.video.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.document:
-            item = {"type": "document", "file_id": message.document.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.audio:
-            item = {"type": "audio", "file_id": message.audio.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-        elif message.voice:
-            item = {"type": "voice", "file_id": message.voice.file_id, "caption": message.caption, "entities": serialize_entities(message.caption_entities)}
-
-        if item:
-            admin_join_msg_buffers[user.id].append(item)
-            await message.reply_text("📥 Message added to buffer! Aur messages bhejin ya finished hone par **`done`** likhein.", parse_mode="Markdown")
         return
 
     # Admin Settings Inputs & Custom Button Interception
@@ -1309,7 +1391,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await message.reply_text("⚠️ Buttons format galat tha! Kripya exact format me bhejey.")
             return
 
-    # 4. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
+    # 6. MESSAGE FROM ADMIN FORUM GROUP -> ROUTE TO USER
     if chat.id == ADMIN_GROUP_ID:
         thread_id = message.message_thread_id
         if not thread_id:
@@ -1324,7 +1406,7 @@ async def handle_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error replying to user {target_user_id} from Forum: {e}")
         return
 
-    # 5. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC
+    # 7. MESSAGE FROM NORMAL USER -> ROUTE TO USER'S FORUM TOPIC
     if user.id not in ADMIN_USER_IDS:
         users_collection.update_one(
             {"user_id": user.id},
